@@ -58,6 +58,12 @@ docs: clarify setup                   # no release
 
 The release workflow creates a `vX.Y.Z` tag and a GitHub Release with generated notes. It does not publish an npm package and does not yet build signed Electron installers. Use `npm run release:dry` to inspect what would be released without creating a tag.
 
+## Pasting images
+
+Paste an image into the chat prompt with Cmd+V (Ctrl+V on other platforms). Images appear as removable thumbnails and can be sent with a prompt or on their own. PNG, JPEG, WebP, and GIF are supported, with up to four images per message and a 5 MB limit per image. Plain-text pasting is unchanged.
+
+Sent images remain in the local conversation history. Claude receives image content through structured input; Codex receives temporary image files that are removed when its request finishes. Restart the development Electron process after updating to load the new image-handling backend.
+
 ## Permission modes
 
 - **Ask approval**: pauses before risky write or execution operations and shows the requested command or change.

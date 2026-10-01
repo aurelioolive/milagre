@@ -3,7 +3,7 @@ const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { promisify } = require("node:util");
-const { runAgent } = require("./agent-runner.cjs");
+const { runAgentWithImages } = require("./image-input.cjs");
 
 const execFileAsync = promisify(execFile);
 
@@ -126,26 +126,24 @@ ipcMain.handle("agent:send", async (_event, request) => {
     const codexPermissionArgs = permissionMode === "full"
       ? ["--dangerously-bypass-approvals-and-sandbox"]
       : ["--approve-for-me"];
-    return runAgent("codex", [
+    return runAgentWithImages("codex", [
       "exec",
       "--model", request.model,
       "--cd", request.projectPath,
       ...codexPermissionArgs,
       "--ephemeral",
       "--color", "never",
-      instruction,
-    ], request.projectPath, { onSpawn: (child) => { activeAgentProcess = child; } }).finally(() => {
+    ], instruction, request.projectPath, request.images, { onSpawn: (child) => { activeAgentProcess = child; } }).finally(() => {
       activeAgentProcess = null;
     });
   }
 
-  return runAgent("claude", [
+  return runAgentWithImages("claude", [
     "--print",
     "--model", request.model,
     "--add-dir", request.projectPath,
     ...(permissionMode === "full" ? ["--dangerously-skip-permissions"] : ["--permission-mode", "acceptEdits"]),
-    instruction,
-  ], request.projectPath, { onSpawn: (child) => { activeAgentProcess = child; } }).finally(() => {
+  ], instruction, request.projectPath, request.images, { onSpawn: (child) => { activeAgentProcess = child; } }).finally(() => {
     activeAgentProcess = null;
   });
 });

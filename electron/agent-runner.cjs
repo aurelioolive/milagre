@@ -5,13 +5,14 @@ function runAgent(command, args, cwd, options = {}) {
     timeoutMs = 120_000,
     spawnImpl = spawn,
     onSpawn,
+    input,
   } = options;
 
   return new Promise((resolve, reject) => {
     const child = spawnImpl(command, args, {
       cwd,
       env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     onSpawn?.(child);
@@ -38,6 +39,15 @@ function runAgent(command, args, cwd, options = {}) {
       stderr += chunk.toString();
     });
     child.on("error", (error) => finish(reject, error));
+    if (input !== undefined) {
+      child.stdin.on("error", (error) => {
+        if (error.code !== "EPIPE") {
+          child.kill("SIGTERM");
+          finish(reject, error);
+        }
+      });
+      child.stdin.end(input);
+    }
     child.on("close", (code, signal) => {
       const output = stdout.trim();
       if (code === 0 && output) return finish(resolve, output);

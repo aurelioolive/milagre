@@ -82,6 +82,13 @@ export interface ChatMessage {
   context: unknown;
   role?: "user" | "assistant";
   model?: string;
+  images?: ImageAttachment[];
+}
+
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  dataUrl: string;
 }
 
 export interface AgentRequest {
@@ -90,6 +97,7 @@ export interface AgentRequest {
   projectPath: string;
   prompt: string;
   permissionMode: PermissionMode;
+  images?: ImageAttachment[];
 }
 
 export interface CoordinatorState {
