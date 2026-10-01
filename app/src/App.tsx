@@ -52,6 +52,7 @@ function chatTitle(messages: ChatMessage[], fallback: string) {
 
 function App() {
   const [project, setProject] = useState<OpenProject | null>(null);
+  const [projectImage, setProjectImage] = useState<{ path: string; src: string | null } | null>(null);
   const projectRef = useRef<OpenProject | null>(null);
   projectRef.current = project;
   const [state, setState] = useState<CoordinatorState | null>(null);
@@ -76,6 +77,18 @@ function App() {
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const approvalTimerRef = useRef<number | null>(null);
   useApplyTheme();
+
+  useEffect(() => {
+    const projectPath = project?.path;
+    if (!projectPath) return;
+    let cancelled = false;
+    window.milagre.getProjectImage(projectPath).then((src) => {
+      if (!cancelled) setProjectImage({ path: projectPath, src });
+    }).catch(() => {
+      if (!cancelled) setProjectImage({ path: projectPath, src: null });
+    });
+    return () => { cancelled = true; };
+  }, [project?.path]);
 
   useEffect(() => {
     window.milagre.getCurrentProject().then((current) => {
@@ -368,11 +381,12 @@ function App() {
         </div>
       )}
       <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-hidden text-ink">
-      <div className={`shrink-0 py-3 pl-3 ${view === "chat" ? "flex" : "hidden"}`}>
+      <div className={`min-h-0 shrink-0 pt-[60px] pb-3 pl-3 ${view === "chat" ? "flex" : "hidden"}`}>
       <SidebarNav
         key={project.path}
         fill
         workspaceName={project.name}
+        workspaceImage={projectImage?.path === project.path ? projectImage.src : null}
         onOpenProject={() => void openProject()}
         recents={chats}
         activeId={selectedSession ? String(selectedSession.id) : null}
@@ -421,6 +435,7 @@ function App() {
             onToggleFirst={() => { if (firstWorktree) void toggleSession(firstWorktree.id); }}
             onToggleSecond={() => { if (secondWorktree) void toggleSession(secondWorktree.id); }}
             onCycleConnection={() => void cycleConnection()}
+            onRecommendationSelect={(option) => void executeSend(option, permissionMode)}
             worktrees={worktrees.map((worktree) => ({ id: worktree.id, name: worktree.name, path: worktree.path }))}
             selectedWorktreeId={selectedWorktree?.id}
             onWorktreeChange={setSelectedWorktreeId}
