@@ -21,7 +21,7 @@ The broader coordination graph, canvas and richer provider adapters are document
 ## Requirements
 
 - macOS
-- Node.js 20 or newer
+- Node.js 24 or newer
 - npm
 - At least one supported local CLI agent, such as Codex CLI or Claude Code
 
