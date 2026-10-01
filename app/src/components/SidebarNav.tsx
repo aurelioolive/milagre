@@ -69,6 +69,8 @@ type SidebarNavProps = {
   workspaceName?: string;
   onOpenProject?: () => void;
   activeTitle?: string | null;
+  /** Controlled selection of a recent by id; takes precedence over title matching. */
+  activeId?: string | null;
   className?: string;
   fill?: boolean;
   onNewChat?: () => void;
@@ -222,6 +224,7 @@ export default function SidebarNav({
   workspaceName = WORKSPACE.name,
   onOpenProject,
   activeTitle,
+  activeId,
   className = "",
   fill = false,
   onNewChat,
@@ -406,7 +409,7 @@ export default function SidebarNav({
 
           <GlideGroup>
             {visibleRecents.map((item) => {
-              const active = item.label === selectedTitle;
+              const active = activeId !== undefined ? item.id === activeId : item.label === selectedTitle;
               return (
                 <button
                   key={item.id}

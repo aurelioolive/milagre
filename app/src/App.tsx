@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ConnectionType,
+  ChatMessage,
   ImageAttachment,
   CoordinatorState,
   Isolation,
@@ -35,10 +36,22 @@ function requiresApproval(prompt: string) {
   return !READ_ONLY_INTENT.test(normalized) || EXPLICIT_MUTATION.test(normalized);
 }
 
+// The chat with the most recent message, or none so the app opens on a new chat.
+function latestSessionId(state: CoordinatorState) {
+  return state.messages.reduce<ChatMessage | null>((latest, message) => (!latest || message.id > latest.id ? message : latest), null)?.session_id ?? null;
+}
+
+function chatTitle(messages: ChatMessage[], fallback: string) {
+  const line = messages.find((message) => message.role !== "assistant" && message.body.trim())?.body.trim().split("\n")[0] ?? "";
+  if (!line) return fallback;
+  return line.length > 60 ? `${line.slice(0, 57)}…` : line;
+}
+
 function App() {
   const [project, setProject] = useState<OpenProject | null>(null);
   const [state, setState] = useState<CoordinatorState | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<number | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedModel, setSelectedModel] = useState<ModelOption>(() => MODEL_CATALOG.find((model) => model.id === getSettings().defaultModelId) ?? MODEL_CATALOG[0]);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => getSettings().defaultPermissionMode);
@@ -62,7 +75,7 @@ function App() {
       setProject(current);
       const nextState = current.state ?? createInitialState(current.name, current.path);
       setState(nextState);
-      setSelectedWorktreeId(sortedWorktrees(nextState)[0]?.id ?? null);
+      selectInitialChat(nextState);
       setLoading(false);
     });
   }, []);
@@ -83,9 +96,9 @@ function App() {
   const secondWorktree = worktrees[1];
   const firstSession = state && firstWorktree ? sessionForWorktree(state, firstWorktree.id) : undefined;
   const secondSession = state && secondWorktree ? sessionForWorktree(state, secondWorktree.id) : undefined;
-  const selectedWorktree = worktrees.find((worktree) => worktree.id === selectedWorktreeId) ?? firstWorktree;
+  const selectedSession = state && selectedSessionId !== null ? state.sessions[selectedSessionId] : undefined;
+  const selectedWorktree = worktrees.find((worktree) => worktree.id === (selectedSession?.worktree_id ?? selectedWorktreeId)) ?? firstWorktree;
   const imageDraft = usePastedImages(selectedWorktree?.path ?? project?.path ?? "");
-  const selectedSession = state && selectedWorktree ? sessionForWorktree(state, selectedWorktree.id) : undefined;
   const connection = state ? Object.values(state.connections)[0] : undefined;
   const messages = state && selectedSession ? state.messages.filter((message) => message.session_id === selectedSession.id) : [];
 
@@ -94,25 +107,48 @@ function App() {
     if (project) await window.milagre.saveProject(project.path, nextState);
   }
 
+  const chats = useMemo(() => {
+    if (!state) return [];
+    return Object.values(state.sessions)
+      .map((session) => ({ session, sessionMessages: state.messages.filter((message) => message.session_id === session.id) }))
+      .filter(({ sessionMessages }) => sessionMessages.length > 0)
+      .sort((a, b) => (b.sessionMessages.at(-1)?.id ?? 0) - (a.sessionMessages.at(-1)?.id ?? 0))
+      .map(({ session, sessionMessages }) => ({ id: String(session.id), label: chatTitle(sessionMessages, session.agent_name) }));
+  }, [state]);
+
+  function selectInitialChat(nextState: CoordinatorState) {
+    const sessionId = latestSessionId(nextState);
+    setSelectedSessionId(sessionId);
+    setSelectedWorktreeId(sessionId !== null ? nextState.sessions[sessionId]?.worktree_id ?? null : sortedWorktrees(nextState)[0]?.id ?? null);
+  }
+
   async function openProject() {
     const nextProject = await window.milagre.openProject();
     if (!nextProject) return;
     setProject(nextProject);
     const nextState = nextProject.state ?? createInitialState(nextProject.name, nextProject.path);
     setState(nextState);
-    setSelectedWorktreeId(sortedWorktrees(nextState)[0]?.id ?? null);
+    selectInitialChat(nextState);
     setDraft("");
   }
 
-  // A new chat in "New worktree" isolation gets its own worktree before the first message goes out.
+  // An open chat keeps its session. A new chat in "New worktree" isolation gets its own worktree
+  // before the first message goes out; a new local chat gets a session in the selected worktree.
   async function resolveSendTarget(body: string) {
-    if (!state || !project || !selectedSession || !selectedWorktree) return null;
-    if (isolation !== "worktree" || messages.length > 0) return { baseState: state, session: selectedSession, worktree: selectedWorktree };
+    if (!state || !project || !selectedWorktree) return null;
+    if (selectedSession) return { baseState: state, session: selectedSession, worktree: selectedWorktree };
+    if (isolation === "local") {
+      const idle = Object.values(state.sessions).find((session) => session.worktree_id === selectedWorktree.id && !state.messages.some((message) => message.session_id === session.id));
+      const session = idle ?? { id: state.next_id, worktree_id: selectedWorktree.id, agent_name: selectedWorktree.name, status: "Created" as const };
+      setSelectedSessionId(session.id);
+      return { baseState: idle ? state : { ...state, next_id: state.next_id + 1, sessions: { ...state.sessions, [session.id]: session } }, session, worktree: selectedWorktree };
+    }
     const created = await window.milagre.createWorktree({ projectPath: project.path, baseBranch: baseBranch ?? selectedWorktree.name, prompt: body });
     const worktree = created.project.state.worktrees[created.worktreeId];
     const session = sessionForWorktree(created.project.state, worktree.id);
     if (!session) throw new Error(`No chat session was created for ${worktree.name}.`);
     setState(created.project.state);
+    setSelectedSessionId(session.id);
     setSelectedWorktreeId(worktree.id);
     setIsolation("local");
     setBaseBranch(null);
@@ -121,7 +157,7 @@ function App() {
   }
 
   async function executeSend(body: string, mode: PermissionMode, images: ImageAttachment[] = imageDraft.images) {
-    if ((!body && !images.length) || !state || !selectedSession || !project || isSending || imageDraft.loading) return;
+    if ((!body && !images.length) || !state || !selectedWorktree || !project || isSending || imageDraft.loading) return;
     setIsSending(true);
     setNewChatError(null);
 
@@ -206,7 +242,7 @@ function App() {
 
   async function sendMessage() {
     const body = draft.trim();
-    if ((!body && !imageDraft.images.length) || !state || !selectedSession || !project || isSending || imageDraft.loading) return;
+    if ((!body && !imageDraft.images.length) || !state || !selectedWorktree || !project || isSending || imageDraft.loading) return;
     if (permissionMode === "ask" && (requiresApproval(body) || /(^|\s)\/[a-zA-Z0-9][\w.:-]*(?=\s|$)/.test(body))) {
       setApprovalImages([...imageDraft.images]);
       setApprovalStatus("pending");
@@ -325,9 +361,18 @@ function App() {
         fill
         workspaceName={project.name}
         onOpenProject={() => void openProject()}
-        recents={worktrees.map((worktree) => ({ id: String(worktree.id), label: worktree.name }))}
-        onPick={(id) => setSelectedWorktreeId(Number(id))}
-        onNewChat={() => setDraft("")}
+        recents={chats}
+        activeId={selectedSession ? String(selectedSession.id) : null}
+        onPick={(id) => {
+          setSelectedSessionId(Number(id));
+          setSelectedWorktreeId(state.sessions[id]?.worktree_id ?? null);
+          setView("chat");
+        }}
+        onNewChat={() => {
+          setSelectedSessionId(null);
+          setDraft("");
+          setNewChatError(null);
+        }}
         onOpenSettings={() => setView("settings")}
       />
       </div>
@@ -377,7 +422,7 @@ function App() {
               <ToolApproval
                 tool="agent.run"
                 title="Allow this agent to run?"
-                description={`The agent wants to work inside ${isolation === "worktree" && messages.length === 0 ? `a new worktree from ${baseBranch ?? selectedWorktree?.name}` : selectedWorktree?.name ?? "the selected worktree"}. Choose how this run can access files and execute operations.`}
+                description={`The agent wants to work inside ${isolation === "worktree" && !selectedSession ? `a new worktree from ${baseBranch ?? selectedWorktree?.name}` : selectedWorktree?.name ?? "the selected worktree"}. Choose how this run can access files and execute operations.`}
                 status={approvalStatus}
                 defaultOpen
                 parameters={[
