@@ -134,7 +134,7 @@ test("asks before running a command and passes the answer back", async (t) => {
   await session.startTurn({ ...TURN, permissionMode: "ask" });
   await asked(events);
   assert.deepEqual(events.find((event) => event.type === "permission-request"), {
-    type: "permission-request", requestId: "srv-1", kind: "command", tool: "Shell", title: "Run this command?", command: "rm -rf build", cwd: "/repo", reason: "Clean the build", allowForChat: true,
+    type: "permission-request", requestId: "srv-1", kind: "command", tool: "Shell", title: "Run this command?", command: "rm -rf build", cwd: "/repo", reason: "Clean the build", allowForChat: true, stepId: "cmd-1",
   });
   assert.equal(session.respondToPermission("srv-1", "allow-for-chat"), true);
   await ended(events);
@@ -156,7 +156,7 @@ test("file changes show the diff Codex is about to apply", async (t) => {
   await session.startTurn(TURN);
   await asked(events);
   assert.deepEqual(events.find((event) => event.type === "permission-request"), {
-    type: "permission-request", requestId: "srv-1", kind: "edit", tool: "Edit files", title: "Edit notes.txt?", files: ["/repo/notes.txt"], diff: "--- /repo/notes.txt\n+hello\n", reason: "Write notes", allowForChat: true,
+    type: "permission-request", requestId: "srv-1", kind: "edit", tool: "Edit files", title: "Edit notes.txt?", files: ["/repo/notes.txt"], diff: "--- /repo/notes.txt\n+hello\n", reason: "Write notes", allowForChat: true, stepId: "patch-1",
   });
   session.respondToPermission("srv-1", "allow");
   await ended(events);
@@ -365,6 +365,32 @@ test("a turn Codex announces that this session isn't running is ignored", async 
   await session.rpc.request("fake/turn-started");
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(events.filter((event) => event.type === "turn-started").length, 1);
+});
+
+test("commands and file changes become steps, in order with the reply", async (t) => {
+  const { session, events } = codex(t, { scenario: "steps" });
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.deepEqual(events.slice(2), [
+    { type: "step-started", step: { id: "exec-1", kind: "shell", title: "Ran `npm test`", detail: "$ npm test\n" } },
+    { type: "step-output", id: "exec-1", text: "ok 2\n" },
+    { type: "step-completed", id: "exec-1", status: "done", detail: "$ npm test\nok 1\nok 2\n" },
+    { type: "step-started", step: { id: "exec-2", kind: "edit", title: "Created `notes.txt`" } },
+    { type: "step-completed", id: "exec-2", status: "done", title: "Created `notes.txt`", detail: "--- /repo/notes.txt\n+hello\n" },
+    { type: "text-delta", messageId: "turn-1", text: "Done" },
+    { type: "turn-completed" },
+  ]);
+});
+
+test("a command still running when the turn is stopped gets no step-completed", async (t) => {
+  const { session, events } = codex(t, { scenario: "running-step" });
+  await session.startTurn(TURN);
+  await waitUntil(() => events.some((event) => event.type === "step-started"));
+  await session.interrupt();
+  await ended(events);
+  assert.equal(events.some((event) => event.type === "step-completed"), false);
+  assert.deepEqual(events.at(-1), { type: "turn-cancelled" });
+  assert.equal(session.state.steps.size, 0);
 });
 
 test("an unknown permission mode uses Ask's policy", async (t) => {
