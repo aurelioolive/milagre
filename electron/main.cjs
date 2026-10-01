@@ -6,6 +6,7 @@ const path = require("node:path");
 const { promisify } = require("node:util");
 const { runAgentWithImages } = require("./image-input.cjs");
 const { discoverSkills, expandSkillPrompt } = require("./skills.cjs");
+const { createWorktree, listBranches } = require("./worktrees.cjs");
 
 const execFileAsync = promisify(execFile);
 
@@ -137,6 +138,15 @@ async function saveProject(projectPath, state) {
 }
 
 ipcMain.handle("skills:list", (_event, projectPath) => discoverSkills(projectPath));
+ipcMain.handle("project:branches", (_event, projectPath) => listBranches(projectPath));
+ipcMain.handle("worktree:create", async (_event, request) => {
+  const created = await createWorktree(request);
+  const project = await readProject(request.projectPath);
+  await saveProject(request.projectPath, project.state);
+  const worktree = Object.values(project.state.worktrees).find((item) => item.name === created.branch);
+  if (!worktree) throw new Error(`Created ${created.branch}, but git did not list it as a worktree.`);
+  return { project, worktreeId: worktree.id };
+});
 
 ipcMain.handle("agent:send", async (_event, request) => {
   const prompt = await expandSkillPrompt(request.projectPath, request.prompt);
@@ -193,6 +203,7 @@ function createWindow() {
     title: "Milagre",
     icon: appIconPath,
     backgroundColor: "#f7faf8",
+    ...(process.platform === "darwin" ? { titleBarStyle: "hidden", trafficLightPosition: { x: 24, y: 22 } } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

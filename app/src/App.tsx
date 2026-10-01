@@ -3,6 +3,7 @@ import {
   ConnectionType,
   ImageAttachment,
   CoordinatorState,
+  Isolation,
   MODEL_CATALOG,
   ModelOption,
   OpenProject,
@@ -15,6 +16,9 @@ import { usePastedImages } from "./components/usePastedImages";
 import { ChatComposer } from "./components/ChatComposer";
 import { DotBackground } from "./components/DotBackground";
 import SidebarNav from "./components/SidebarNav";
+import { SettingsNav, SettingsPanel } from "./components/Settings";
+import type { SettingsSection } from "./components/Settings";
+import { getSettings, useApplyTheme } from "./lib/settings";
 import { ToolApproval, ToolApprovalCode } from "./components/agents/tool-approval";
 import type { ToolApprovalStatus } from "./components/agents/tool-approval";
 import type { UpdateState } from "./electron";
@@ -36,8 +40,14 @@ function App() {
   const [state, setState] = useState<CoordinatorState | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
-  const [selectedModel, setSelectedModel] = useState<ModelOption>(MODEL_CATALOG[0]);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
+  const [selectedModel, setSelectedModel] = useState<ModelOption>(() => MODEL_CATALOG.find((model) => model.id === getSettings().defaultModelId) ?? MODEL_CATALOG[0]);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => getSettings().defaultPermissionMode);
+  const [view, setView] = useState<"chat" | "settings">("chat");
+  const [isolation, setIsolation] = useState<Isolation>("local");
+  const [branches, setBranches] = useState<string[]>([]);
+  const [baseBranch, setBaseBranch] = useState<string | null>(null);
+  const [newChatError, setNewChatError] = useState<string | null>(null);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [approvalImages, setApprovalImages] = useState<ImageAttachment[]>([]);
   const [approvalPrompt, setApprovalPrompt] = useState<string | null>(null);
   const [approvalStatus, setApprovalStatus] = useState<ToolApprovalStatus>("pending");
@@ -45,6 +55,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const approvalTimerRef = useRef<number | null>(null);
+  useApplyTheme();
 
   useEffect(() => {
     window.milagre.getCurrentProject().then((current) => {
@@ -62,6 +73,10 @@ function App() {
     unsubscribe = window.milagre.onUpdateState(setUpdate);
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (project) void window.milagre.listBranches(project.path).then(setBranches);
+  }, [project?.path]);
 
   const worktrees = useMemo(() => (state ? sortedWorktrees(state) : []), [state]);
   const firstWorktree = worktrees[0];
@@ -89,11 +104,45 @@ function App() {
     setDraft("");
   }
 
+  // A new chat in "New worktree" isolation gets its own worktree before the first message goes out.
+  async function resolveSendTarget(body: string) {
+    if (!state || !project || !selectedSession || !selectedWorktree) return null;
+    if (isolation !== "worktree" || messages.length > 0) return { baseState: state, session: selectedSession, worktree: selectedWorktree };
+    const created = await window.milagre.createWorktree({ projectPath: project.path, baseBranch: baseBranch ?? selectedWorktree.name, prompt: body });
+    const worktree = created.project.state.worktrees[created.worktreeId];
+    const session = sessionForWorktree(created.project.state, worktree.id);
+    if (!session) throw new Error(`No chat session was created for ${worktree.name}.`);
+    setState(created.project.state);
+    setSelectedWorktreeId(worktree.id);
+    setIsolation("local");
+    setBaseBranch(null);
+    void window.milagre.listBranches(project.path).then(setBranches);
+    return { baseState: created.project.state, session, worktree };
+  }
+
   async function executeSend(body: string, mode: PermissionMode, images: ImageAttachment[] = imageDraft.images) {
     if ((!body && !images.length) || !state || !selectedSession || !project || isSending || imageDraft.loading) return;
+    setIsSending(true);
+    setNewChatError(null);
+
+    let target: Awaited<ReturnType<typeof resolveSendTarget>>;
+    try {
+      target = await resolveSendTarget(body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNewChatError(`Could not create the worktree: ${message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "")}`);
+      setIsSending(false);
+      return;
+    }
+    if (!target) {
+      setIsSending(false);
+      return;
+    }
+    const { baseState, session, worktree } = target;
+
     const userMessage = {
-      id: state.next_id,
-      session_id: selectedSession.id,
+      id: baseState.next_id,
+      session_id: session.id,
       body,
       images,
       context: null,
@@ -101,20 +150,19 @@ function App() {
       model: selectedModel.id,
     };
     const stateWithUserMessage: CoordinatorState = {
-      ...state,
-      next_id: state.next_id + 1,
-      messages: [...state.messages, userMessage],
+      ...baseState,
+      next_id: baseState.next_id + 1,
+      messages: [...baseState.messages, userMessage],
     };
     setDraft("");
     imageDraft.clear();
-    setIsSending(true);
 
     try {
       await persist(stateWithUserMessage);
       const response = await window.milagre.sendToAgent({
         provider: selectedModel.provider,
         model: selectedModel.id,
-        projectPath: selectedWorktree.path,
+        projectPath: worktree.path,
         prompt: body || "Describe the attached images.",
         images,
         permissionMode: mode,
@@ -126,7 +174,7 @@ function App() {
           ...stateWithUserMessage.messages,
           {
             id: stateWithUserMessage.next_id,
-            session_id: selectedSession.id,
+            session_id: session.id,
             body: response,
             context: null,
             role: "assistant",
@@ -143,7 +191,7 @@ function App() {
           ...stateWithUserMessage.messages,
           {
             id: stateWithUserMessage.next_id,
-            session_id: selectedSession.id,
+            session_id: session.id,
             body: message === "Agent cancelled by user" ? "Agent run cancelled." : `Agent error: ${message}`,
             context: null,
             role: "assistant",
@@ -217,8 +265,29 @@ function App() {
   }
 
   useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (event.key === ",") {
+        event.preventDefault();
+        setView("settings");
+      } else if (event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        void openProject();
+      }
+    }
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
+
+  useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
+      if (view === "settings") {
+        event.preventDefault();
+        setView("chat");
+        return;
+      }
       if (approvalPrompt) {
         event.preventDefault();
         denyPending();
@@ -232,7 +301,7 @@ function App() {
 
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [approvalPrompt, isSending]);
+  }, [approvalPrompt, isSending, view]);
 
   if (loading || !project || !state) {
     return <div className="grid h-screen place-items-center overflow-hidden bg-page text-sm text-ink-3">Loading workspace…</div>;
@@ -240,8 +309,9 @@ function App() {
 
   return (
     <DotBackground>
+      <div aria-hidden className="fixed inset-x-0 top-0 z-50 h-10 [-webkit-app-region:drag]" />
       {update?.status === "downloaded" && (
-        <div className="fixed inset-x-4 top-4 z-50 mx-auto flex max-w-2xl items-center justify-between gap-4 rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm text-ink shadow-lg">
+        <div className="fixed inset-x-4 top-4 z-50 mx-auto flex max-w-2xl items-center justify-between gap-4 rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm text-ink shadow-lg [-webkit-app-region:no-drag]">
           <span>Milagre {update.version} está pronto para atualizar.</span>
           <button className="rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700" onClick={() => void window.milagre.installUpdate()}>
             Atualizar e reiniciar
@@ -249,6 +319,7 @@ function App() {
         </div>
       )}
       <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-hidden text-ink">
+      <div className={`shrink-0 py-3 pl-3 ${view === "chat" ? "flex" : "hidden"}`}>
       <SidebarNav
         key={project.path}
         fill
@@ -257,12 +328,18 @@ function App() {
         recents={worktrees.map((worktree) => ({ id: String(worktree.id), label: worktree.name }))}
         onPick={(id) => setSelectedWorktreeId(Number(id))}
         onNewChat={() => setDraft("")}
-        footerLabel="Records & Context"
-        onFooterClick={() => void openProject()}
+        onOpenSettings={() => setView("settings")}
       />
+      </div>
+      {view === "settings" && (
+        <div className="flex shrink-0 py-3 pl-3">
+          <SettingsNav section={settingsSection} onSelect={setSettingsSection} onBack={() => setView("chat")} />
+        </div>
+      )}
 
-      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent">
-        <div className="min-h-0 flex-1 overflow-hidden">
+      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent pr-3 pb-3">
+        {view === "settings" && <SettingsPanel section={settingsSection} />}
+        <div className={`min-h-0 flex-1 overflow-hidden ${view === "chat" ? "" : "hidden"}`}>
           <ChatComposer
             key={project.path}
             messages={messages}
@@ -287,11 +364,20 @@ function App() {
             onToggleFirst={() => { if (firstWorktree) void toggleSession(firstWorktree.id); }}
             onToggleSecond={() => { if (secondWorktree) void toggleSession(secondWorktree.id); }}
             onCycleConnection={() => void cycleConnection()}
+            worktrees={worktrees.map((worktree) => ({ id: worktree.id, name: worktree.name, path: worktree.path }))}
+            selectedWorktreeId={selectedWorktree?.id}
+            onWorktreeChange={setSelectedWorktreeId}
+            isolation={isolation}
+            onIsolationChange={(next) => { setIsolation(next); setNewChatError(null); }}
+            branches={branches}
+            baseBranch={baseBranch ?? selectedWorktree?.name ?? branches[0] ?? ""}
+            onBaseBranchChange={setBaseBranch}
+            newChatError={newChatError}
             approval={approvalPrompt ? (
               <ToolApproval
                 tool="agent.run"
                 title="Allow this agent to run?"
-                description={`The agent wants to work inside ${selectedWorktree?.name ?? "the selected worktree"}. Choose how this run can access files and execute operations.`}
+                description={`The agent wants to work inside ${isolation === "worktree" && messages.length === 0 ? `a new worktree from ${baseBranch ?? selectedWorktree?.name}` : selectedWorktree?.name ?? "the selected worktree"}. Choose how this run can access files and execute operations.`}
                 status={approvalStatus}
                 defaultOpen
                 parameters={[

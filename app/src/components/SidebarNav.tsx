@@ -9,17 +9,15 @@ import {
   ArrowLeft01Icon,
   Cancel01Icon,
   Edit02Icon,
-  File02Icon,
-  Home01Icon,
-  Moon02Icon,
+  FolderAddIcon,
   Search01Icon,
   Settings01Icon,
   SparklesIcon,
-  Sun01Icon,
   Tick02Icon,
   UserAdd01Icon,
 } from "@hugeicons/core-free-icons";
 import GlideMenu from "@/components/primitives/GlideMenu";
+import Tooltip from "@/components/primitives/Tooltip";
 
 type HugeIconProps = { size?: number; className?: string };
 type HugeIconData = Parameters<typeof HugeiconsIcon>[0]["icon"];
@@ -33,15 +31,12 @@ const IconCheckmark1Small = (props: HugeIconProps) => <HugeIcon icon={Tick02Icon
 const IconChevronDownSmall = (props: HugeIconProps) => <HugeIcon icon={ArrowDown01Icon} {...props} />;
 const IconCrossSmall = (props: HugeIconProps) => <HugeIcon icon={Cancel01Icon} {...props} />;
 const IconEditBig = (props: HugeIconProps) => <HugeIcon icon={Edit02Icon} {...props} />;
-const IconOpenProject = (props: HugeIconProps) => <HugeIcon icon={File02Icon} {...props} />;
-const IconHome = (props: HugeIconProps) => <HugeIcon icon={Home01Icon} {...props} />;
+const IconFolderAdd = (props: HugeIconProps) => <HugeIcon icon={FolderAddIcon} {...props} />;
 const IconMagnifyingGlass = (props: HugeIconProps) => <HugeIcon icon={Search01Icon} {...props} />;
-const IconMoon = (props: HugeIconProps) => <HugeIcon icon={Moon02Icon} {...props} />;
 const IconPlusMedium = (props: HugeIconProps) => <HugeIcon icon={Add01Icon} {...props} />;
 const IconPopsicle2 = (props: HugeIconProps) => <HugeIcon icon={SparklesIcon} {...props} />;
 const IconSettingsGear1 = (props: HugeIconProps) => <HugeIcon icon={Settings01Icon} {...props} />;
 const IconSidebarLeftArrow = (props: HugeIconProps) => <HugeIcon icon={ArrowLeft01Icon} {...props} />;
-const IconSun = (props: HugeIconProps) => <HugeIcon icon={Sun01Icon} {...props} />;
 const IconUserAdd = (props: HugeIconProps) => <HugeIcon icon={UserAdd01Icon} {...props} />;
 
 /* ─────────────────────────────────────────────────────────
@@ -53,18 +48,11 @@ const IconUserAdd = (props: HugeIconProps) => <HugeIcon icon={UserAdd01Icon} {..
 
 const WORKSPACE = { key: "creamery", name: "Creamery Ops", monogram: "C" };
 
-const NAV_ITEMS = [
-  { key: "home", label: "Home", icon: <IconHome size={18} /> },
-  { key: "invite", label: "Invite users", icon: <IconUserAdd size={18} />, count: "3/10" },
-];
-
 export type SidebarRecent = {
   id: string;
   label: string;
   prompt?: string;
 };
-
-type Theme = "light" | "dark";
 
 const DEFAULT_RECENTS: SidebarRecent[] = [
   { id: "suppliers", label: "Supplier records" },
@@ -85,13 +73,7 @@ type SidebarNavProps = {
   fill?: boolean;
   onNewChat?: () => void;
   onPick?: (id: string, label: string, prompt?: string) => void;
-  /** controlled primary-nav selection (e.g. "home" | "invite") */
-  activeNav?: string;
-  onNavigate?: (key: string) => void;
-  /** footer call-to-action — defaults to the demo "Upgrade" button */
-  footerLabel?: string;
-  footerIcon?: ReactNode;
-  onFooterClick?: () => void;
+  onOpenSettings?: () => void;
   recents?: SidebarRecent[];
   variant?: string;
 };
@@ -118,7 +100,10 @@ const CHAT_SEARCH_MOTION = {
   easing: "cubic-bezier(0.16, 1, 0.3, 1)",
 };
 
-function GlideGroup({ children }: { children: ReactNode }) {
+const BOTTOM_BAR_BUTTON =
+  "flex size-9 items-center justify-center rounded-[8px] text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover-2 hover:text-ink active:scale-[0.96]";
+
+export function GlideGroup({ children }: { children: ReactNode }) {
   return (
     <GlideMenu
       rowSelector="[data-row]"
@@ -130,7 +115,7 @@ function GlideGroup({ children }: { children: ReactNode }) {
   );
 }
 
-function RailButton({
+export function RailButton({
   icon,
   label,
   active = false,
@@ -241,25 +226,10 @@ export default function SidebarNav({
   fill = false,
   onNewChat,
   onPick,
-  activeNav,
-  onNavigate,
-  footerLabel = "Upgrade",
-  footerIcon,
-  onFooterClick,
+  onOpenSettings,
   recents = DEFAULT_RECENTS,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === "undefined") return "light";
-    const saved = window.localStorage.getItem("milagre-theme");
-    return saved === "dark" ? "dark" : "light";
-  });
-  const [internalNav, setInternalNav] = useState("chats");
-  const currentNav = activeNav ?? internalNav;
-  const selectNav = (key: string) => {
-    setInternalNav(key);
-    onNavigate?.(key);
-  };
   const [demoActiveTitle, setDemoActiveTitle] = useState<string | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspacePosition, setWorkspacePosition] = useState({ top: 0, left: 0 });
@@ -271,15 +241,6 @@ export default function SidebarNav({
   const selectedTitle = activeTitle === undefined ? demoActiveTitle : activeTitle;
   const visibleRecents = recents.filter((item) => item.label.toLowerCase().includes(query.trim().toLowerCase()));
   const workspace = { name: workspaceName, monogram: workspaceName.trim().slice(0, 1).toUpperCase() || "M" };
-
-  useEffect(() => {
-    const root = document.documentElement;
-    root.classList.add("theme-switching");
-    root.classList.toggle("dark", theme === "dark");
-    window.localStorage.setItem("milagre-theme", theme);
-    const frame = window.requestAnimationFrame(() => root.classList.remove("theme-switching"));
-    return () => window.cancelAnimationFrame(frame);
-  }, [theme]);
 
   useEffect(() => {
     if (!workspaceOpen) return;
@@ -319,6 +280,7 @@ export default function SidebarNav({
       } as CSSProperties}
     >
       <div className="flex min-h-0 w-[224px] shrink-0 flex-col">
+        <div aria-hidden className="h-8 shrink-0" />
         <div className="relative mb-2.5 h-10 shrink-0">
           <button
             ref={workspaceButtonRef}
@@ -377,21 +339,9 @@ export default function SidebarNav({
             label="New chat"
             onClick={() => {
               if (activeTitle === undefined) setDemoActiveTitle(null);
-              selectNav("chats");
               onNewChat?.();
             }}
           />
-          {NAV_ITEMS.map((item) => (
-            <RailButton
-              key={item.key}
-              icon={item.icon}
-              label={item.label}
-              count={item.count}
-              active={currentNav === item.key}
-              onClick={() => selectNav(item.key)}
-            />
-          ))}
-          <RailButton icon={<IconOpenProject size={18} />} label="Open project" onClick={onOpenProject} />
         </GlideGroup>
 
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
@@ -401,7 +351,6 @@ export default function SidebarNav({
               className={`absolute inset-0 flex items-center gap-1.5 px-2 text-[12.5px] font-medium text-ink-3 transition-[opacity,transform] ${searchOpen ? "pointer-events-none -translate-x-1 opacity-0" : "translate-x-0 opacity-100"}`}
               style={{ transitionDuration: `${CHAT_SEARCH_MOTION.duration}ms`, transitionTimingFunction: CHAT_SEARCH_MOTION.easing }}
             >
-              <IconChevronDownSmall size={16} />
               <span>Chats</span>
             </div>
 
@@ -465,7 +414,6 @@ export default function SidebarNav({
                   type="button"
                   title={item.label}
                   onClick={() => {
-                    selectNav("chats");
                     if (activeTitle === undefined) setDemoActiveTitle(item.label);
                     onPick?.(item.id, item.label, item.prompt);
                   }}
@@ -485,34 +433,17 @@ export default function SidebarNav({
           </GlideGroup>
         </div>
 
-        <div className="mx-2 mt-3 w-[208px] border-t border-line pt-3">
-          <button
-            type="button"
-            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            aria-pressed={theme === "dark"}
-            onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
-            className="sidebar-row relative z-10 flex h-8 items-center rounded-[8px] px-2 text-left text-ink-2 transition-[background-color,color,transform] duration-150 hover:bg-hover-2 hover:text-ink active:scale-[0.98]"
-          >
-            <span className="flex size-5 shrink-0 items-center justify-center">
-              {theme === "dark" ? <IconSun size={17} /> : <IconMoon size={17} />}
-            </span>
-            <span className="sidebar-copy ml-1.5 min-w-0 flex-1 truncate text-[13px] font-medium">
-              {theme === "dark" ? "Light theme" : "Dark theme"}
-            </span>
-            <span className="sidebar-copy relative ml-2 flex h-5 w-9 shrink-0 items-center rounded-full bg-line-strong p-0.5 transition-colors">
-              <span className={`size-4 rounded-full bg-surface shadow-xs transition-transform duration-200 ${theme === "dark" ? "translate-x-4" : "translate-x-0"}`} />
-            </span>
-          </button>
-          <div className="sidebar-copy mt-3 w-full">
-            <button
-              type="button"
-              onClick={onFooterClick ?? onNewChat}
-              className="flex h-8 w-full items-center justify-center gap-1.5 rounded-control bg-hover-2 text-[12.5px] font-medium text-ink transition-[background-color,transform] duration-150 hover:bg-line-strong active:scale-[0.98]"
-            >
-              {footerIcon}
-              {footerLabel}
+        <div className={`mx-2 mt-3 flex border-t border-line py-1.5 ${collapsed ? "w-9 flex-col-reverse gap-1" : "w-[208px] items-center justify-between"}`}>
+          <Tooltip label="Add project" shortcut="⌘O">
+            <button type="button" aria-label="Add project" onClick={onOpenProject} className={BOTTOM_BAR_BUTTON}>
+              <IconFolderAdd size={17} />
             </button>
-          </div>
+          </Tooltip>
+          <Tooltip label="Settings" shortcut="⌘," align={collapsed ? "start" : "end"}>
+            <button type="button" aria-label="Settings" onClick={onOpenSettings} className={BOTTOM_BAR_BUTTON}>
+              <IconSettingsGear1 size={17} />
+            </button>
+          </Tooltip>
         </div>
       </div>
     </aside>
