@@ -40,9 +40,23 @@ Useful checks:
 npm run typecheck
 npm run build
 npm run test:agent
+npm run release:dry
 ```
 
 `npm run dev` starts Vite and opens the Electron shell. The renderer is served locally at port 5180 during development.
+
+## Releases
+
+Releases are automated from merges into `main` with `semantic-release`. Commit and Pull Request titles should use Conventional Commits:
+
+```text
+fix: correct agent cancellation       # patch release
+feat: add worktree canvas             # minor release
+feat!: change the coordination API    # major release
+docs: clarify setup                   # no release
+```
+
+The release workflow creates a `vX.Y.Z` tag and a GitHub Release with generated notes. It does not publish an npm package and does not yet build signed Electron installers. Use `npm run release:dry` to inspect what would be released without creating a tag.
 
 ## Permission modes
 

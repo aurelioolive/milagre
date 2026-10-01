@@ -33,7 +33,8 @@ When changing the UI, include a short description of the interaction and, when p
 - Add or update tests when changing agent execution, persistence or approval behavior.
 - Do not commit `.env` files, API keys, local coordination data, `node_modules`, build output or personal worktree paths.
 - Run the checks above before requesting review.
+- Use Conventional Commit prefixes in Pull Request titles: `fix:`, `feat:`, `perf:`, `docs:`, `refactor:` or `chore:`. Add `!` or a `BREAKING CHANGE:` footer for breaking changes.
 
 ## Commit messages
 
-There is no enforced commit format yet. Use a short imperative subject that explains the change, for example: `Add approval state for file edits`.
+Pull Request titles are used to calculate automated releases. Use a short title such as `feat: add approval state for file edits` or `fix: prevent duplicate agent responses`.
