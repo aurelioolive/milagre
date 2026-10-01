@@ -143,7 +143,7 @@ function App() {
   async function sendMessage() {
     const body = draft.trim();
     if (!body || !state || !selectedSession || !project || isSending) return;
-    if (permissionMode === "ask" && requiresApproval(body)) {
+    if (permissionMode === "ask" && (requiresApproval(body) || /(^|\s)\/[a-zA-Z0-9][\w.:-]*(?=\s|$)/.test(body))) {
       setApprovalStatus("pending");
       setApprovalPrompt(body);
       return;
@@ -242,6 +242,7 @@ function App() {
             key={project.path}
             messages={messages}
             sessions={state.sessions}
+            projectPath={selectedWorktree?.path ?? project.path}
             draft={draft}
             onDraftChange={setDraft}
             onSend={() => void sendMessage()}

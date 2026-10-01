@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComponentProps, KeyboardEvent } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -21,6 +21,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { ModelOption, ModelProvider, PermissionMode } from "../model";
 import { MODEL_CATALOG, PERMISSION_MODES } from "../model";
+import { useSkills } from "./useSkills";
 
 type SpeechRecognitionResultLike = { [index: number]: { transcript: string } };
 type SpeechRecognitionEventLike = Event & { results: { [index: number]: SpeechRecognitionResultLike } };
@@ -49,6 +50,8 @@ function Icon({ icon, size = 15 }: { icon: IconData; size?: number }) {
   return <HugeiconsIcon icon={icon} size={size} strokeWidth={1.8} color="currentColor" />;
 }
 
+type MenuRow = { key: string; name: string; desc: string; group?: string; source?: string; path?: string };
+
 type Source = { key: string; name: string; desc: string; icon: IconData };
 
 const SOURCES: Source[] = [
@@ -68,12 +71,13 @@ const COMMANDS = [
 const FILES = ["project-context.md", "worktree-diff.patch", "agent-output.txt"];
 
 function parseToken(draft: string): { kind: "at" | "slash"; query: string; start: number } | null {
-  const match = /(^|\s)([@/])([\w-]*)$/.exec(draft);
+  const match = /(^|\s)([@/])([\w.:-]*)$/.exec(draft);
   if (!match) return null;
   return { kind: match[2] === "@" ? "at" : "slash", query: match[3].toLowerCase(), start: match.index + match[1].length };
 }
 
 interface PromptComposerProps {
+  projectPath: string;
   draft: string;
   onDraftChange: (draft: string) => void;
   onSend: () => void;
@@ -84,7 +88,7 @@ interface PromptComposerProps {
   onPermissionModeChange: (mode: PermissionMode) => void;
 }
 
-export function PromptComposer({ draft, onDraftChange, onSend, isSending, selectedModel, onModelChange, permissionMode, onPermissionModeChange }: PromptComposerProps) {
+export function PromptComposer({ projectPath, draft, onDraftChange, onSend, isSending, selectedModel, onModelChange, permissionMode, onPermissionModeChange }: PromptComposerProps) {
   const [dismissed, setDismissed] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
@@ -110,10 +114,19 @@ export function PromptComposer({ draft, onDraftChange, onSend, isSending, select
   const token = dismissed ? null : parseToken(draft);
   const menu: "at" | "slash" | null = plusOpen ? "at" : token?.kind ?? null;
   const tokenQuery = plusOpen ? "" : token?.query ?? "";
-  const rows = menu === "at"
+  const { skills, warnings: skillWarnings, loading: skillsLoading } = useSkills(projectPath, menu === "slash");
+  const skillRows = ["workspace", "user"].flatMap((scope) => skills.filter((skill) => skill.scope === scope).map((skill) => ({
+    key: `skill:${skill.name}`, name: `/${skill.name}`, desc: skill.description,
+    group: scope === "workspace" ? "Workspace skills" : "User skills", source: skill.provider, path: skill.path,
+  })));
+  const commands: MenuRow[] = [
+    ...COMMANDS.filter((command) => !skills.some((skill) => skill.name.toLowerCase() === command.key)).map((command) => ({ ...command, group: "Milagre skills" })),
+    ...skillRows,
+  ];
+  const rows: MenuRow[] = menu === "at"
     ? SOURCES.filter((source) => source.name.toLowerCase().includes(tokenQuery))
     : menu === "slash"
-      ? COMMANDS.filter((command) => command.name.slice(1).startsWith(tokenQuery))
+      ? commands.filter((command) => `${command.name.slice(1)} ${command.desc}`.toLowerCase().includes(tokenQuery))
       : [];
   const modelRows = MODEL_CATALOG.filter((model) => model.provider === provider && `${model.name} ${model.id}`.toLowerCase().includes(query.toLowerCase()));
   const canSend = draft.trim().length > 0 || attachments.length > 0;
@@ -121,12 +134,13 @@ export function PromptComposer({ draft, onDraftChange, onSend, isSending, select
   useEffect(() => {
     setActive(0);
     setEngaged(false);
-  }, [menu, tokenQuery]);
+  }, [menu, tokenQuery, projectPath, skills]);
 
   useLayoutEffect(() => {
     const target = rowRefs.current[active];
+    if (target && engaged) target.scrollIntoView({ block: "nearest" });
     if (target) setRowBox({ top: target.offsetTop, height: target.offsetHeight });
-  }, [active, menu, tokenQuery, rows.length]);
+  }, [active, engaged, menu, tokenQuery, rows.length]);
 
   useLayoutEffect(() => {
     if (!modelOpen) return;
@@ -219,7 +233,7 @@ export function PromptComposer({ draft, onDraftChange, onSend, isSending, select
       }
       if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
         event.preventDefault();
-        pick(rows[active]);
+        pick(rows[active] ?? rows[0]);
         return;
       }
     }
@@ -241,17 +255,25 @@ export function PromptComposer({ draft, onDraftChange, onSend, isSending, select
       <div className="relative">
         {menu && (
           <div onMouseLeave={() => setEngaged(false)} className="absolute inset-x-0 bottom-full z-20 mb-2 rounded-[10px] border border-line bg-surface p-1 shadow-raised" style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}>
+            <div className="relative max-h-64 overflow-y-auto" aria-label={menu === "slash" ? "Commands and skills" : "Sources"}>
             <span aria-hidden className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover" style={{ top: rowBox?.top ?? 0, height: rowBox?.height ?? 0, opacity: rowBox && engaged ? 1 : 0, transition: "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease" }} />
             {rows.map((row, index) => {
               const source = menu === "at" ? SOURCES.find((item) => item.key === row.key) : undefined;
-              return <button key={row.key} type="button" ref={(element) => { rowRefs.current[index] = element; }} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => { setActive(index); setEngaged(true); }} onClick={() => pick(row)} className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left">
+              const showGroup = row.group && row.group !== rows[index - 1]?.group;
+              return <Fragment key={row.key}>
+                {showGroup && <div data-skill-group={row.group} className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-3">{row.group}</div>}
+                <button type="button" ref={(element) => { rowRefs.current[index] = element; }} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => { setActive(index); setEngaged(true); }} onClick={() => pick(row)} title={row.path ?? row.desc} className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left">
                 {source && <span className="flex size-5.5 shrink-0 items-center justify-center text-ink-2"><Icon icon={source.icon} size={15} /></span>}
-                <span className="shrink-0 text-[12.5px] font-medium text-ink">{row.name}</span>
+                <span className="max-w-[45%] shrink-0 truncate text-[12.5px] font-medium text-ink">{row.name}</span>
                 <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{row.desc}</span>
-              </button>;
+                {row.source && <span className="shrink-0 text-[10px] text-ink-3">{row.source}</span>}
+              </button>
+              </Fragment>;
             })}
             {rows.length === 0 && <div className="flex h-9 items-center px-2 text-[12px] text-ink-3">No matches for “{tokenQuery}”</div>}
-            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">{menu === "at" ? "Type to search sources & files" : "Type to search commands"}</div>
+            </div>
+            {menu === "slash" && skillWarnings.length > 0 && <div role="status" title={skillWarnings.join("\n")} className="px-2 py-1 text-[11px] text-ink-3">{skillWarnings.length === 1 ? skillWarnings[0] : `${skillWarnings.length} skills could not be loaded. Hover for details.`}</div>}
+            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">{menu === "at" ? "Type to search sources & files" : skillsLoading ? "Loading skills…" : "Type to search commands & skills"}</div>
           </div>
         )}
 

@@ -138,3 +138,16 @@ export function sortedWorktrees(state: CoordinatorState) {
 export function sessionForWorktree(state: CoordinatorState, worktreeId: number) {
   return Object.values(state.sessions).find((session) => session.worktree_id === worktreeId);
 }
+
+export interface SkillOption {
+  name: string;
+  description: string;
+  path: string;
+  scope: "workspace" | "user";
+  provider: string;
+}
+
+export interface SkillCatalog {
+  skills: SkillOption[];
+  warnings: string[];
+}

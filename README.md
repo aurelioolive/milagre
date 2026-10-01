@@ -58,6 +58,14 @@ docs: clarify setup                   # no release
 
 The release workflow creates a `vX.Y.Z` tag and a GitHub Release with generated notes. It does not publish an npm package and does not yet build signed Electron installers. Use `npm run release:dry` to inspect what would be released without creating a tag.
 
+## Slash skills
+
+Type `/` in the prompt to search commands and installed skills by name or description. Built-in commands appear first under **Milagre skills**, followed by **Workspace skills** and **User skills**. Select a skill with a click, Enter, or Tab, add your request, and send. Milagre reads the selected `SKILL.md` and includes its instructions and reference directory in the agent request.
+
+Skills are discovered recursively in `.agents/skills`, `.claude/skills`, `.gemini/skills`, and `.codex/skills`, under both the active worktree and your home directory. Symlinked skill directories are supported. Workspace skills take precedence over user skills with the same name; within each scope, directories are checked in the order above. A skill with the same name as a built-in command takes precedence over that command.
+
+The menu refreshes when reopened and when switching worktrees. Skill names and descriptions come from YAML frontmatter, with the folder name as a fallback. Unreadable or invalid skills are reported without blocking the rest of the list. Discovery is limited to eight nested levels and 2,000 directories; individual skill files and the combined skill context are limited to 256 KiB. Only standalone slash tokens outside inline and fenced code invoke skills. In Ask approval mode, slash requests require confirmation before the agent runs.
+
 ## Permission modes
 
 - **Ask approval**: pauses before risky write or execution operations and shows the requested command or change.
