@@ -21,6 +21,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { ModelOption, ModelProvider, PermissionMode } from "../model";
 import { MODEL_CATALOG, PERMISSION_MODES } from "../model";
+import type { ImageDraft } from "./usePastedImages";
 import { useSkills } from "./useSkills";
 
 type SpeechRecognitionResultLike = { [index: number]: { transcript: string } };
@@ -77,6 +78,7 @@ function parseToken(draft: string): { kind: "at" | "slash"; query: string; start
 }
 
 interface PromptComposerProps {
+  imageDraft: ImageDraft;
   projectPath: string;
   draft: string;
   onDraftChange: (draft: string) => void;
@@ -88,7 +90,7 @@ interface PromptComposerProps {
   onPermissionModeChange: (mode: PermissionMode) => void;
 }
 
-export function PromptComposer({ projectPath, draft, onDraftChange, onSend, isSending, selectedModel, onModelChange, permissionMode, onPermissionModeChange }: PromptComposerProps) {
+export function PromptComposer({ imageDraft, projectPath, draft, onDraftChange, onSend, isSending, selectedModel, onModelChange, permissionMode, onPermissionModeChange }: PromptComposerProps) {
   const [dismissed, setDismissed] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
@@ -129,7 +131,7 @@ export function PromptComposer({ projectPath, draft, onDraftChange, onSend, isSe
       ? commands.filter((command) => `${command.name.slice(1)} ${command.desc}`.toLowerCase().includes(tokenQuery))
       : [];
   const modelRows = MODEL_CATALOG.filter((model) => model.provider === provider && `${model.name} ${model.id}`.toLowerCase().includes(query.toLowerCase()));
-  const canSend = draft.trim().length > 0 || attachments.length > 0;
+  const canSend = draft.trim().length > 0 || imageDraft.images.length > 0;
 
   useEffect(() => {
     setActive(0);
@@ -316,15 +318,18 @@ export function PromptComposer({ projectPath, draft, onDraftChange, onSend, isSe
         )}
 
         <div className={`promptbar-surface relative isolate flex flex-col overflow-visible border border-line bg-surface transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${expanded ? "gap-2.5 rounded-[22px] p-3.5" : "gap-1.5 rounded-[14px] p-1.5"}`}>
+          {imageDraft.images.length > 0 && <div className="flex flex-wrap gap-2 px-1 pt-1" aria-label="Attached images">{imageDraft.images.map((image) => <div key={image.id} className="relative rounded-lg border border-line bg-inset p-1"><img src={image.dataUrl} alt={image.name} className="h-20 w-24 rounded object-contain" /><button type="button" aria-label={`Remove image ${image.name}`} onClick={() => imageDraft.remove(image.id)} className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full border border-line bg-surface text-ink shadow-xs"><Icon icon={Cancel01Icon} size={12} /></button></div>)}</div>}
+          {imageDraft.loading && <div role="status" className="px-2 text-xs text-ink-3">Loading images…</div>}
+          {imageDraft.error && <div role="alert" className="px-2 text-xs text-red">{imageDraft.error}</div>}
           {attachments.length > 0 && <div className="flex flex-wrap gap-1.5 px-0.5 pt-0.5">{attachments.map((file, index) => <span key={`${file}-${index}`} className="flex h-6.5 items-center gap-1.5 rounded-chip bg-field py-1 pr-1 pl-1.5 text-[11.5px] text-ink-2 shadow-hairline"><Icon icon={File02Icon} size={12} /><span className="max-w-36 truncate">{file}</span><button type="button" aria-label={`Remove ${file}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex size-5 items-center justify-center rounded-[5px] text-ink-3 hover:bg-line hover:text-ink"><Icon icon={Cancel01Icon} size={10} /></button></span>)}</div>}
           <span ref={measureRef} aria-hidden="true" className="pointer-events-none absolute invisible whitespace-pre text-[13px] leading-[18px]">{draft}</span>
           <div ref={controlsRef} className={`grid items-end gap-x-1 gap-y-1.5 ${expanded ? "grid-cols-[28px_auto_minmax(0,1fr)_auto_28px_28px]" : "grid-cols-[28px_minmax(0,1fr)_auto_auto_28px_28px]"}`}>
             <button type="button" aria-label="Add attachments and sources" aria-expanded={plusOpen} onClick={() => { setModelOpen(false); setPlusOpen((current) => !current); inputRef.current?.focus(); }} className={`flex size-7 shrink-0 items-center justify-center text-ink-3 transition-colors hover:bg-hover hover:text-ink ${plusOpen ? "bg-hover" : ""}`}><Icon icon={Add01Icon} size={16} /></button>
-            <textarea ref={inputRef} rows={1} value={draft} onChange={(event) => { onDraftChange(event.target.value); setDismissed(false); setPlusOpen(false); }} onKeyDown={handleKeyDown} placeholder={listening ? "Listening…" : "Prompt or tag a worktree with @"} aria-label="Prompt" className={`${expanded ? "col-span-full col-start-1 row-start-1 min-h-[68px] px-2 py-2 text-[14px] leading-5" : "col-start-2 row-start-1 min-h-7 px-1 py-[5px] text-[13px] leading-[18px]"} min-w-0 w-full resize-none overflow-hidden bg-transparent text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3`} />
+            <textarea onPaste={(event) => void imageDraft.onPaste(event)} ref={inputRef} rows={1} value={draft} onChange={(event) => { onDraftChange(event.target.value); setDismissed(false); setPlusOpen(false); }} onKeyDown={handleKeyDown} placeholder={listening ? "Listening…" : "Prompt or tag a worktree with @"} aria-label="Prompt" className={`${expanded ? "col-span-full col-start-1 row-start-1 min-h-[68px] px-2 py-2 text-[14px] leading-5" : "col-start-2 row-start-1 min-h-7 px-1 py-[5px] text-[13px] leading-[18px]"} min-w-0 w-full resize-none overflow-hidden bg-transparent text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3`} />
             <button ref={modelRef} type="button" aria-expanded={modelOpen} onClick={() => { setPlusOpen(false); setPermissionOpen(false); setModelOpen((current) => !current); }} className={`flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink ${expanded ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}><span className={`flex size-5 items-center justify-center rounded-chip ${selectedModel.provider === "claude" ? "bg-orange-tint text-orange" : "bg-accent-tint text-accent-ink"}`}><Icon icon={selectedModel.provider === "claude" ? AiBrowserIcon : AiChat01Icon} size={13} /></span><span className="max-w-28 truncate">{selectedModel.name}</span><Icon icon={ArrowDown01Icon} size={12} /></button>
             <button type="button" aria-label="Agent permissions" aria-expanded={permissionOpen} onClick={() => { setPlusOpen(false); setModelOpen(false); setPermissionOpen((current) => !current); }} className={`flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-1.5 text-[12px] font-medium transition-colors hover:bg-hover ${permissionMode === "full" ? "text-red" : permissionMode === "auto" ? "text-green" : "text-ink-2"} ${expanded ? "col-start-3 row-start-2" : "col-start-4 row-start-1"}`}><Icon icon={SecurityCheckIcon} size={14} /><span className="hidden min-[900px]:inline">{permissionMode === "ask" ? "Ask" : permissionMode === "auto" ? "Auto" : "Full"}</span></button>
             <button type="button" aria-label={listening ? "Stop voice input" : "Start voice input"} aria-pressed={listening} onClick={toggleListening} className={`flex size-7 shrink-0 items-center justify-center rounded-[8px] transition-colors ${expanded ? "col-start-5 row-start-2" : "col-start-5 row-start-1"} ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"}`}><Icon icon={Mic01Icon} size={15} /></button>
-            <button type="button" aria-label="Send" disabled={!canSend || isSending} onClick={onSend} className={`flex size-7 shrink-0 items-center justify-center rounded-[8px] text-surface transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] disabled:cursor-not-allowed disabled:bg-line-strong disabled:text-ink-2 ${expanded ? "col-start-6 row-start-2" : "col-start-6 row-start-1"}`} style={{ background: canSend && !isSending ? "var(--ink)" : "var(--line-strong)" }}><Icon icon={ArrowUp01Icon} size={16} /></button>
+            <button type="button" aria-label="Send" disabled={!canSend || isSending || imageDraft.loading} onClick={onSend} className={`flex size-7 shrink-0 items-center justify-center rounded-[8px] text-surface transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] disabled:cursor-not-allowed disabled:bg-line-strong disabled:text-ink-2 ${expanded ? "col-start-6 row-start-2" : "col-start-6 row-start-1"}`} style={{ background: canSend && !isSending ? "var(--ink)" : "var(--line-strong)" }}><Icon icon={ArrowUp01Icon} size={16} /></button>
           </div>
         </div>
       </div>

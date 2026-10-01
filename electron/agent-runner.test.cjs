@@ -39,3 +39,22 @@ test("runAgent rejects when the agent never finishes", async () => {
 
   await assert.rejects(result, /Agent timed out after 10ms/);
 });
+
+test("runAgent pipes structured input and closes stdin", async () => {
+  const child = silentChild();
+  child.stdin = new EventEmitter();
+  let input;
+  child.stdin.end = (value) => { input = value; };
+  const result = runAgent("agent", [], process.cwd(), {
+    input: '{"type":"user"}\n',
+    spawnImpl: (_command, _args, options) => {
+      assert.deepEqual(options.stdio, ["pipe", "pipe", "pipe"]);
+      return child;
+    },
+  });
+  assert.equal(input, '{"type":"user"}\n');
+  child.stdin.emit("error", Object.assign(new Error("closed"), { code: "EPIPE" }));
+  child.stdout.emit("data", "answer");
+  child.emit("close", 0, null);
+  assert.equal(await result, "answer");
+});

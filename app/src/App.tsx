@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ConnectionType,
+  ImageAttachment,
   CoordinatorState,
   MODEL_CATALOG,
   ModelOption,
@@ -10,6 +11,7 @@ import {
   sessionForWorktree,
   sortedWorktrees,
 } from "./model";
+import { usePastedImages } from "./components/usePastedImages";
 import { ChatComposer } from "./components/ChatComposer";
 import { DotBackground } from "./components/DotBackground";
 import SidebarNav from "./components/SidebarNav";
@@ -35,6 +37,7 @@ function App() {
   const [draft, setDraft] = useState("");
   const [selectedModel, setSelectedModel] = useState<ModelOption>(MODEL_CATALOG[0]);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
+  const [approvalImages, setApprovalImages] = useState<ImageAttachment[]>([]);
   const [approvalPrompt, setApprovalPrompt] = useState<string | null>(null);
   const [approvalStatus, setApprovalStatus] = useState<ToolApprovalStatus>("pending");
   const [isSending, setIsSending] = useState(false);
@@ -57,6 +60,7 @@ function App() {
   const firstSession = state && firstWorktree ? sessionForWorktree(state, firstWorktree.id) : undefined;
   const secondSession = state && secondWorktree ? sessionForWorktree(state, secondWorktree.id) : undefined;
   const selectedWorktree = worktrees.find((worktree) => worktree.id === selectedWorktreeId) ?? firstWorktree;
+  const imageDraft = usePastedImages(selectedWorktree?.path ?? project?.path ?? "");
   const selectedSession = state && selectedWorktree ? sessionForWorktree(state, selectedWorktree.id) : undefined;
   const connection = state ? Object.values(state.connections)[0] : undefined;
   const messages = state && selectedSession ? state.messages.filter((message) => message.session_id === selectedSession.id) : [];
@@ -76,12 +80,13 @@ function App() {
     setDraft("");
   }
 
-  async function executeSend(body: string, mode: PermissionMode) {
-    if (!body || !state || !selectedSession || !project || isSending) return;
+  async function executeSend(body: string, mode: PermissionMode, images: ImageAttachment[] = imageDraft.images) {
+    if ((!body && !images.length) || !state || !selectedSession || !project || isSending || imageDraft.loading) return;
     const userMessage = {
       id: state.next_id,
       session_id: selectedSession.id,
       body,
+      images,
       context: null,
       role: "user" as const,
       model: selectedModel.id,
@@ -92,15 +97,17 @@ function App() {
       messages: [...state.messages, userMessage],
     };
     setDraft("");
+    imageDraft.clear();
     setIsSending(true);
-    await persist(stateWithUserMessage);
 
     try {
+      await persist(stateWithUserMessage);
       const response = await window.milagre.sendToAgent({
         provider: selectedModel.provider,
         model: selectedModel.id,
         projectPath: selectedWorktree.path,
-        prompt: body,
+        prompt: body || "Describe the attached images.",
+        images,
         permissionMode: mode,
       });
       await persist({
@@ -142,8 +149,9 @@ function App() {
 
   async function sendMessage() {
     const body = draft.trim();
-    if (!body || !state || !selectedSession || !project || isSending) return;
+    if ((!body && !imageDraft.images.length) || !state || !selectedSession || !project || isSending || imageDraft.loading) return;
     if (permissionMode === "ask" && (requiresApproval(body) || /(^|\s)\/[a-zA-Z0-9][\w.:-]*(?=\s|$)/.test(body))) {
+      setApprovalImages([...imageDraft.images]);
       setApprovalStatus("pending");
       setApprovalPrompt(body);
       return;
@@ -183,7 +191,7 @@ function App() {
     approvalTimerRef.current = window.setTimeout(() => {
       approvalTimerRef.current = null;
       setApprovalPrompt(null);
-      void executeSend(body, mode);
+      void executeSend(body, mode, approvalImages);
     }, 350);
   }
 
@@ -242,6 +250,7 @@ function App() {
             key={project.path}
             messages={messages}
             sessions={state.sessions}
+            imageDraft={imageDraft}
             projectPath={selectedWorktree?.path ?? project.path}
             draft={draft}
             onDraftChange={setDraft}

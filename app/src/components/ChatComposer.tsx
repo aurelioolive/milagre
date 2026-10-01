@@ -11,6 +11,7 @@ import {
   Message01Icon,
 } from "@hugeicons/core-free-icons";
 import type { AgentSession, ChatMessage as AppChatMessage, ModelOption, PermissionMode } from "../model";
+import type { ImageDraft } from "./usePastedImages";
 import { PromptComposer } from "./PromptComposer";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { MessageScroller } from "./agents/message-scroller";
@@ -46,6 +47,7 @@ function MessageSection({
         <span className="text-ink-2">{isUser ? modelName : "Context aware"}</span>
       </div>
       <div className={`min-w-0 max-w-full text-[13px] leading-[1.55] text-ink ${isUser ? "rounded-xl bg-field px-3 py-1.5" : ""}`}>
+        {message.images && message.images.length > 0 && <div className="mb-2 flex flex-wrap gap-2">{message.images.map((image) => <a key={image.id} href={image.dataUrl} target="_blank" rel="noreferrer" title={image.name}><img src={image.dataUrl} alt={image.name} className="max-h-60 max-w-full rounded-lg object-contain" /></a>)}</div>}
         <p className="break-words whitespace-pre-wrap [overflow-wrap:anywhere]">{message.body}</p>
       </div>
     </article>
@@ -53,6 +55,7 @@ function MessageSection({
 }
 
 interface ChatComposerProps {
+  imageDraft: ImageDraft;
   projectPath: string;
   messages: AppChatMessage[];
   sessions: Record<string, AgentSession>;
@@ -78,6 +81,7 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  imageDraft,
   projectPath,
   messages,
   sessions,
@@ -160,6 +164,7 @@ export function ChatComposer({
       <div className="mx-auto mt-auto w-full max-w-3xl shrink-0 p-1.5">
         {approval && <div className="mb-2 w-full">{approval}</div>}
         <PromptComposer
+          imageDraft={imageDraft}
           projectPath={projectPath}
           draft={draft}
           onDraftChange={onDraftChange}
