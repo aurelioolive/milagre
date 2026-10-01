@@ -7,4 +7,11 @@ contextBridge.exposeInMainWorld("milagre", {
   saveProject: (projectPath, state) => ipcRenderer.invoke("project:save", projectPath, state),
   sendToAgent: (request) => ipcRenderer.invoke("agent:send", request),
   cancelAgent: () => ipcRenderer.invoke("agent:cancel"),
+  getUpdateState: () => ipcRenderer.invoke("update:state"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  onUpdateState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("update:state", listener);
+    return () => ipcRenderer.removeListener("update:state", listener);
+  },
 });

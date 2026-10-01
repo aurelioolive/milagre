@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeImage } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -11,6 +12,31 @@ const execFileAsync = promisify(execFile);
 const stateFile = (projectPath) => path.join(projectPath, ".milagre", "coordination.json");
 const appIconPath = path.join(__dirname, "../app/public/logo-milagre-image.png");
 let activeAgentProcess = null;
+let updateState = { status: "idle", version: null, progress: 0 };
+
+function publishUpdateState(nextState) {
+  updateState = { ...updateState, ...nextState };
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("update:state", updateState);
+  }
+}
+
+async function checkForUpdates() {
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  publishUpdateState({ status: "checking" });
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    if (!result?.updateInfo) publishUpdateState({ status: "up-to-date" });
+  } catch (error) {
+    console.warn("Milagre update check failed:", error.message);
+    publishUpdateState({ status: "error" });
+  }
+}
+
+ipcMain.handle("update:state", () => updateState);
+ipcMain.handle("update:install", () => autoUpdater.quitAndInstall());
 
 function emptyState(projectName) {
   return {
@@ -192,13 +218,17 @@ ipcMain.handle("project:open", async () => {
 });
 ipcMain.handle("project:save", (_event, projectPath, state) => saveProject(projectPath, state));
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   app.setName("Milagre");
   if (process.platform === "darwin" && app.dock) {
     const appIcon = nativeImage.createFromPath(appIconPath);
     if (!appIcon.isEmpty()) app.dock.setIcon(appIcon);
   }
   createWindow();
+  autoUpdater.on("update-available", (info) => publishUpdateState({ status: "downloading", version: info.version }));
+  autoUpdater.on("download-progress", (progress) => publishUpdateState({ status: "downloading", progress: progress.percent }));
+  autoUpdater.on("update-downloaded", (info) => publishUpdateState({ status: "downloaded", version: info.version, progress: 100 }));
+  await checkForUpdates();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

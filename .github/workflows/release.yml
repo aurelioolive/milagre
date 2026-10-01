@@ -14,6 +14,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - name: Check out repository history
         uses: actions/checkout@v4
@@ -36,3 +38,47 @@ jobs:
         run: npm run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Find created release tag
+        id: release
+        shell: bash
+        run: |
+          tag="$(git tag --points-at HEAD --sort=-version:refname | grep '^v' | head -n 1 || true)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if [ -n "$tag" ]; then
+            echo "Release tag: $tag"
+          else
+            echo "No new release was created for this commit."
+          fi
+
+  package-macos:
+    needs: release
+    if: needs.release.outputs.tag != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: x64
+          - runner: macos-latest
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out released commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build macOS installers
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: npm run package:mac -- --${{ matrix.arch }} --config.extraMetadata.version="${RELEASE_TAG#v}"
+      - name: Upload macOS installers to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release.outputs.tag }}" release/*.dmg release/*.zip --clobber
