@@ -10,7 +10,9 @@
     "build": "tsc --noEmit && vite build",
     "start": "node scripts/launch-electron.cjs",
     "typecheck": "tsc --noEmit",
-    "test:agent": "node --test electron/agent-runner.test.cjs"
+    "test:agent": "node --test electron/agent-runner.test.cjs",
+    "release": "semantic-release",
+    "release:dry": "semantic-release --dry-run --no-ci"
   },
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.3.5",
@@ -20,6 +22,9 @@
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/github": "^12.0.10",
+    "@semantic-release/release-notes-generator": "^14.1.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
@@ -27,6 +32,7 @@
     "concurrently": "^9.2.1",
     "electron": "^44.5.1",
     "postcss": "^8.5.28",
+    "semantic-release": "^25.0.9",
     "shadow-plugin": "^2.1.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.2",

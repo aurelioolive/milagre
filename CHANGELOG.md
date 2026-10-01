@@ -4,6 +4,7 @@
 
 - Preparing the repository for its first public open-source release.
 - Documenting the React/Electron architecture and local permission model.
+- Added automated Conventional Commit-based GitHub releases with semantic-release.
 
 ## 0.1.0 — Public alpha
 
