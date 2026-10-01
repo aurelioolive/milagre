@@ -1,0 +1,125 @@
+const assert = require("node:assert/strict");
+const test = require("node:test");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
+const { discoverSkills, expandSkillPrompt, skillCommands } = require("./skills.cjs");
+
+async function fixture(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "milagre-skills-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const project = path.join(root, "workspace");
+  const home = path.join(root, "home");
+  async function skill(base, provider, name, text) {
+    const file = path.join(base, provider, "skills", name, "SKILL.md");
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, text);
+    return file;
+  }
+  return { root, project, home, skill };
+}
+
+test("discovers workspace and user skills from every supported directory", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  for (const base of [project, home]) {
+    for (const provider of [".agents", ".claude", ".gemini", ".codex"]) {
+      await skill(base, provider, `${path.basename(base)}-${provider.slice(1)}`, "# Instructions");
+    }
+  }
+  const result = await discoverSkills(project, { home });
+  assert.equal(result.skills.length, 8);
+  assert.equal(result.skills.filter((item) => item.scope === "workspace").length, 4);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("parses YAML names, quoted descriptions and multiline descriptions", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  await skill(project, ".agents", "folder", '---\nname: "custom:review"\ndescription: >-\n  Review code:\n  find bugs\n---\nBody');
+  await skill(home, ".claude", "quoted", '---\ndescription: "Check: code"\n---\nBody');
+  const { skills } = await discoverSkills(project, { home });
+  assert.equal(skills[0].name, "custom:review");
+  assert.equal(skills[0].description, "Review code: find bugs");
+  assert.equal(skills[1].description, "Check: code");
+});
+
+test("workspace overrides user skills and directory precedence is deterministic", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  await skill(home, ".agents", "review", "User");
+  await skill(project, ".claude", "review", "Claude");
+  const preferred = await skill(project, ".agents", "review", "Workspace");
+  const { skills } = await discoverSkills(project, { home });
+  assert.equal(skills.length, 1);
+  assert.equal(skills[0].path, preferred);
+});
+
+test("follows nested and symlinked skill directories without looping or duplicates", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  const file = await skill(project, ".agents", "nested/review", "Review");
+  const root = path.join(project, ".agents", "skills");
+  await fs.symlink(root, path.join(root, "cycle"), "dir");
+  await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+  await fs.symlink(root, path.join(home, ".claude", "skills"), "dir");
+  const { skills, warnings } = await discoverSkills(project, { home });
+  assert.equal(skills.length, 1);
+  assert.equal(skills[0].path, file);
+  assert.deepEqual(warnings, []);
+});
+
+test("missing directories are harmless and malformed or oversized skills do not hide valid skills", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  assert.deepEqual(await discoverSkills(project, { home }), { skills: [], warnings: [] });
+  await skill(project, ".agents", "bad", '---\nname: [broken\n---\nBody');
+  await skill(project, ".agents", "large", "x".repeat(256 * 1024 + 1));
+  await skill(project, ".agents", "valid", "Valid");
+  const { skills, warnings } = await discoverSkills(project, { home });
+  assert.deepEqual(skills.map((item) => item.name), ["valid"]);
+  assert.equal(warnings.length, 2);
+});
+
+test("changing workspaces does not reuse skills from the previous workspace", async (t) => {
+  const { root, project, home, skill } = await fixture(t);
+  await skill(project, ".agents", "first", "First");
+  await skill(home, ".agents", "shared", "Shared");
+  await discoverSkills(project, { home });
+  const { skills } = await discoverSkills(path.join(root, "second"), { home });
+  assert.deepEqual(skills.map((item) => item.name), ["shared"]);
+});
+
+test("expands requested skills once, preserving arguments and reference directories", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  const file = await skill(home, ".gemini", "review", "Review the diff. Read references/checklist.md.");
+  await skill(project, ".agents", "unused", "DO NOT INCLUDE THIS");
+  const prompt = "/review src/main.ts\nAlso /review";
+  const expanded = await expandSkillPrompt(project, prompt, { home });
+  assert.ok(expanded.startsWith(prompt));
+  assert.ok(expanded.includes(`Resolve relative references from: ${path.dirname(file)}`));
+  assert.equal(expanded.split("Review the diff.").length, 2);
+  assert.ok(!expanded.includes("DO NOT INCLUDE THIS"));
+  await fs.writeFile(file, "Updated instructions");
+  assert.ok((await expandSkillPrompt(project, "/review", { home })).includes("Updated instructions"));
+});
+
+test("does not treat paths, URLs, inline code or fenced code as invocations", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  await skill(project, ".agents", "review", "Instructions");
+  const prompt = "Open /review/file and https://host/review. ` /review `\n```sh\n/review\n```\n~~~\n/review\n~~~";
+  assert.deepEqual([...skillCommands(prompt)], []);
+  assert.equal(await expandSkillPrompt(project, prompt, { home }), prompt);
+  assert.equal(await expandSkillPrompt(project, "/unknown", { home }), "/unknown");
+});
+
+test("rejects relative workspace paths and limits combined skill context", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  await assert.rejects(discoverSkills("relative", { home }), /absolute workspace/);
+  await skill(project, ".agents", "one", "a".repeat(150 * 1024));
+  await skill(project, ".agents", "two", "b".repeat(150 * 1024));
+  await assert.rejects(expandSkillPrompt(project, "/one /two", { home }), /too large/);
+});
+
+test("tolerates unquoted colons in descriptions used by installed skills", async (t) => {
+  const { project, home, skill } = await fixture(t);
+  await skill(home, ".agents", "shipit", "---\nname: shipit\ndescription: Open a PR. Usage: /shipit [draft]\nargument-hint: [draft] [skip-checks]\n---\nInstructions");
+  const { skills, warnings } = await discoverSkills(project, { home });
+  assert.deepEqual(warnings, []);
+  assert.equal(skills[0].description, "Open a PR. Usage: /shipit [draft]");
+});

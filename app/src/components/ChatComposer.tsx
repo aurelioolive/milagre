@@ -56,6 +56,7 @@ function MessageSection({
 
 interface ChatComposerProps {
   imageDraft: ImageDraft;
+  projectPath: string;
   messages: AppChatMessage[];
   sessions: Record<string, AgentSession>;
   draft: string;
@@ -81,6 +82,7 @@ interface ChatComposerProps {
 
 export function ChatComposer({
   imageDraft,
+  projectPath,
   messages,
   sessions,
   draft,
@@ -163,6 +165,7 @@ export function ChatComposer({
         {approval && <div className="mb-2 w-full">{approval}</div>}
         <PromptComposer
           imageDraft={imageDraft}
+          projectPath={projectPath}
           draft={draft}
           onDraftChange={onDraftChange}
           onSend={onSend}

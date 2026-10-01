@@ -150,7 +150,7 @@ function App() {
   async function sendMessage() {
     const body = draft.trim();
     if ((!body && !imageDraft.images.length) || !state || !selectedSession || !project || isSending || imageDraft.loading) return;
-    if (permissionMode === "ask" && requiresApproval(body)) {
+    if (permissionMode === "ask" && (requiresApproval(body) || /(^|\s)\/[a-zA-Z0-9][\w.:-]*(?=\s|$)/.test(body))) {
       setApprovalImages([...imageDraft.images]);
       setApprovalStatus("pending");
       setApprovalPrompt(body);
@@ -251,6 +251,7 @@ function App() {
             messages={messages}
             sessions={state.sessions}
             imageDraft={imageDraft}
+            projectPath={selectedWorktree?.path ?? project.path}
             draft={draft}
             onDraftChange={setDraft}
             onSend={() => void sendMessage()}

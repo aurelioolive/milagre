@@ -19,7 +19,11 @@ export interface ModelOption {
 }
 
 export const MODEL_CATALOG: ModelOption[] = [
-  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "codex", description: "Frontier model for complex reasoning and coding", recommended: true },
+  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "codex", description: "Latest workhorse model for coding and everyday work", recommended: true },
+  { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "codex", description: "Frontier intelligence for the most demanding work" },
+  { id: "gpt-6-sol", name: "GPT-6 Sol", provider: "codex", description: "Previous generation workhorse model" },
+  { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "codex", description: "Fast and affordable model for easier tasks" },
+  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "codex", description: "Older generation workhorse model" },
   { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "codex", description: "Balanced intelligence and cost" },
   { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "codex", description: "Fast, cost-sensitive model" },
   { id: "gpt-5.1-codex", name: "GPT-5.1 Codex", provider: "codex", description: "Optimized for agentic coding" },
@@ -30,10 +34,12 @@ export const MODEL_CATALOG: ModelOption[] = [
   { id: "gpt-5-mini", name: "GPT-5 mini", provider: "codex", description: "Fast model for well-defined tasks" },
   { id: "gpt-4.1", name: "GPT-4.1", provider: "codex", description: "Strong non-reasoning model" },
   { id: "claude-fable-5", name: "Claude Fable 5", provider: "claude", description: "High-capability general and agentic work", recommended: true },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5", provider: "claude", description: "Advanced reasoning and agentic coding" },
   { id: "claude-opus-5", name: "Claude Opus 5", provider: "claude", description: "Most capable Claude model" },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "claude", description: "Advanced reasoning and coding" },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7", provider: "claude", description: "Deep analysis and agentic coding" },
   { id: "claude-opus-4-6", name: "Claude Opus 4.6", provider: "claude", description: "Complex professional work" },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", provider: "claude", description: "Balanced reasoning, coding, and speed" },
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", provider: "claude", description: "High-performance reasoning and efficiency" },
   { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "claude", description: "Balanced quality and speed" },
   { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: "claude", description: "Reliable coding and analysis" },
@@ -145,4 +151,17 @@ export function sortedWorktrees(state: CoordinatorState) {
 
 export function sessionForWorktree(state: CoordinatorState, worktreeId: number) {
   return Object.values(state.sessions).find((session) => session.worktree_id === worktreeId);
+}
+
+export interface SkillOption {
+  name: string;
+  description: string;
+  path: string;
+  scope: "workspace" | "user";
+  provider: string;
+}
+
+export interface SkillCatalog {
+  skills: SkillOption[];
+  warnings: string[];
 }

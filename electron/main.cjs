@@ -4,6 +4,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { promisify } = require("node:util");
 const { runAgentWithImages } = require("./image-input.cjs");
+const { discoverSkills, expandSkillPrompt } = require("./skills.cjs");
 
 const execFileAsync = promisify(execFile);
 
@@ -109,12 +110,15 @@ async function saveProject(projectPath, state) {
   await fs.writeFile(stateFile(projectPath), JSON.stringify(state, null, 2));
 }
 
+ipcMain.handle("skills:list", (_event, projectPath) => discoverSkills(projectPath));
+
 ipcMain.handle("agent:send", async (_event, request) => {
+  const prompt = await expandSkillPrompt(request.projectPath, request.prompt);
   const instruction = [
     "You are an agent inside Milagre, an agent development environment.",
     "Answer the user concisely and humanly. Do not claim to have changed files unless you actually did.",
     "The user is asking from the shared project context below:",
-    request.prompt,
+    prompt,
   ].join("\n\n");
 
   // Ask approval is handled by Milagre's confirmation dialog before this IPC
