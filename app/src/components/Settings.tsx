@@ -1,7 +1,7 @@
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon, ArrowLeft02Icon, InformationCircleIcon, PaintBoardIcon, Settings01Icon } from "@hugeicons/core-free-icons";
-import { version } from "../../../package.json";
 import { MODEL_CATALOG, PERMISSION_MODES } from "../model";
 import type { PermissionMode } from "../model";
 import { updateSettings, useSettings } from "../lib/settings";
@@ -115,11 +115,15 @@ function AppearanceSettings() {
 }
 
 function AboutSettings() {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    void window.milagre.getAppVersion().then(setVersion);
+  }, []);
   const electron = navigator.userAgent.match(/Electron\/([\d.]+)/)?.[1];
   const chrome = navigator.userAgent.match(/Chrome\/([\d.]+)/)?.[1];
   return (
     <Group title="Milagre">
-      <Row label="Version"><span className="tabular-nums">{version}</span></Row>
+      <Row label="Version"><span className="tabular-nums">{version ?? "…"}</span></Row>
       {electron && <Row label="Runtime"><span className="tabular-nums">Electron {electron} · Chromium {chrome}</span></Row>}
       <Row label="License">MIT</Row>
     </Group>

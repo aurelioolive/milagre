@@ -81,6 +81,8 @@ async function saveProject(projectPath, state) {
 
 ipcMain.handle("skills:list", (_event, projectPath) => discoverSkills(projectPath));
 ipcMain.handle("project:branches", (_event, projectPath) => listBranches(projectPath));
+// Packaged builds get their release version from electron-builder metadata, not the source package.json.
+ipcMain.handle("app:version", () => app.getVersion());
 ipcMain.handle("worktree:create", async (_event, request) => {
   const created = await createWorktree(request);
   const project = await readProject(request.projectPath);
