@@ -17,6 +17,7 @@ import { DotBackground } from "./components/DotBackground";
 import SidebarNav from "./components/SidebarNav";
 import { ToolApproval, ToolApprovalCode } from "./components/agents/tool-approval";
 import type { ToolApprovalStatus } from "./components/agents/tool-approval";
+import type { UpdateState } from "./electron";
 
 const connectionTypes: ConnectionType[] = ["Information", "Dependency", "Review", "Blocking"];
 
@@ -42,6 +43,7 @@ function App() {
   const [approvalStatus, setApprovalStatus] = useState<ToolApprovalStatus>("pending");
   const [isSending, setIsSending] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [update, setUpdate] = useState<UpdateState | null>(null);
   const approvalTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -52,6 +54,13 @@ function App() {
       setSelectedWorktreeId(sortedWorktrees(nextState)[0]?.id ?? null);
       setLoading(false);
     });
+  }, []);
+
+  useEffect(() => {
+    let unsubscribe = () => {};
+    window.milagre.getUpdateState().then(setUpdate);
+    unsubscribe = window.milagre.onUpdateState(setUpdate);
+    return unsubscribe;
   }, []);
 
   const worktrees = useMemo(() => (state ? sortedWorktrees(state) : []), [state]);
@@ -231,6 +240,14 @@ function App() {
 
   return (
     <DotBackground>
+      {update?.status === "downloaded" && (
+        <div className="fixed inset-x-4 top-4 z-50 mx-auto flex max-w-2xl items-center justify-between gap-4 rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm text-ink shadow-lg">
+          <span>Milagre {update.version} está pronto para atualizar.</span>
+          <button className="rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700" onClick={() => void window.milagre.installUpdate()}>
+            Atualizar e reiniciar
+          </button>
+        </div>
+      )}
       <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-hidden text-ink">
       <SidebarNav
         key={project.path}

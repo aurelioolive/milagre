@@ -56,7 +56,9 @@ feat!: change the coordination API    # major release
 docs: clarify setup                   # no release
 ```
 
-The release workflow creates a `vX.Y.Z` tag and a GitHub Release with generated notes. It does not publish an npm package and does not yet build signed Electron installers. Use `npm run release:dry` to inspect what would be released without creating a tag.
+The release workflow creates a `vX.Y.Z` tag and a GitHub Release with generated notes, then uploads macOS DMG and ZIP installers for Intel and Apple Silicon. Installed builds check GitHub Releases at startup, download updates in the background, and ask to restart when ready. Use `npm run release:dry` to inspect what would be released without creating a tag.
+
+For production distribution, configure Apple Developer signing and notarization in GitHub Actions. Without them, macOS can show security warnings or block downloaded updates.
 
 ## Pasting images
 
