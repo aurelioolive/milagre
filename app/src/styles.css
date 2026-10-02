@@ -559,7 +559,7 @@ a:focus-visible .animated-underline::after {
   will-change: opacity, transform, filter;
 }
 
-/* The sidebar is one persistent 224px tree clipped by a 52px shell.
+/* The sidebar is one persistent 224–420px tree clipped by a 52px shell.
  * Every rail glyph remains centered at x=26 in both states. */
 /* Linear blur over the top of a scrolled chat: strongest at the window edge, gone by the bottom. */
 .chat-top-blur {
@@ -610,7 +610,7 @@ a:focus-visible .animated-underline::after {
 
 /* ══════════════════════════════════════════════════════════
  * COMPONENT-SPECIFIC — SidebarNav
- * The 44↔224px collapsible sidebar tree.
+ * The 44↔224px (resizable to 420px) collapsible sidebar tree.
  * Copy this block only alongside SidebarNav; it is not part of the
  * generic foundation above.
  * ══════════════════════════════════════════════════════════ */
