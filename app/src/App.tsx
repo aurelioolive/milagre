@@ -598,6 +598,7 @@ function App() {
     const worktree = created.project.state.worktrees[created.worktreeId];
     const session = sessionForWorktree(created.project.state, worktree.id);
     if (!session) throw new Error(`No chat session was created for ${worktree.name}.`);
+    if (created.setupNote) setNotice(created.setupNote);
     void window.milagre.listBranches(project.path).then(setBranches);
     return { session: session as AgentSession | null, worktree, createdNextId: created.project.state.next_id };
   }
