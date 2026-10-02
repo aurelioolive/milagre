@@ -21,12 +21,14 @@ const { reconcileState } = require("./project-state.cjs");
 const { resolveProjectImage } = require("./project-image.cjs");
 const { saveProjectState, stateFile } = require("./project-store.cjs");
 const { createUsageReader } = require("./usage.cjs");
+const { createUsageStore, cachedSnapshot } = require("./usage-cache.cjs");
 
 const execFileAsync = promisify(execFile);
 
 const appIconPath = path.join(__dirname, "../app/public/logo-milagre-image.png");
 let updateState = { status: "idle", version: null, progress: 0 };
-const readUsage = createUsageReader();
+const usageStore = createUsageStore({ file: path.join(app.getPath("userData"), "usage-cache.json") });
+const readUsage = createUsageReader({ store: usageStore });
 
 function publishUpdateState(nextState) {
   updateState = { ...updateState, ...nextState };
@@ -164,6 +166,7 @@ function executable(name) {
 }
 
 ipcMain.handle("usage:read", () => readUsage());
+ipcMain.handle("usage:cached", () => cachedSnapshot(usageStore, Date.now()));
 
 ipcMain.handle("agent:start-turn", async (_event, request) => {
   const images = decodeImages(request.images);
