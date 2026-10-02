@@ -19,8 +19,11 @@ const { createModelCache } = require("./agents/models.cjs");
 const { cliWhenLoggedIn, createCliStatus } = require("./agents/status.cjs");
 const { SessionManager } = require("./agents/session-manager.cjs");
 const { discoverSkills, expandSkillPrompt } = require("./skills.cjs");
-const { createWorktree, listBranches, renameWorktreeBranch } = require("./worktrees.cjs");
+const { DEFAULT_WORKTREE_ROOT, createWorktree, listBranches, renameWorktreeBranch } = require("./worktrees.cjs");
 const { suggestWorktreeName } = require("./worktree-name.cjs");
+const { removeWorktree, worktreeStatus } = require("./worktree-cleanup.cjs");
+const { previewFilesToCopy } = require("./worktree-files.cjs");
+const { createProjectSettings } = require("./project-settings.cjs");
 const { readDiffStat } = require("./diffstat.cjs");
 const { reconcileState } = require("./project-state.cjs");
 const { resolveProjectImage } = require("./project-image.cjs");
@@ -106,6 +109,55 @@ ipcMain.handle("project:image", async (_event, projectPath) => {
 });
 // Packaged builds get their release version from electron-builder metadata, not the source package.json.
 ipcMain.handle("app:version", () => app.getVersion());
+// Where Milagre's worktrees live. An unpackaged build can point it elsewhere (live checks use a temporary folder).
+function worktreeRoot() {
+  return (!app.isPackaged && process.env.MILAGRE_WORKTREE_ROOT) || DEFAULT_WORKTREE_ROOT;
+}
+
+let projectSettingsStore = null;
+function projectSettings() {
+  projectSettingsStore ??= createProjectSettings(path.join(app.getPath("userData"), "project-settings.json"));
+  return projectSettingsStore;
+}
+
+ipcMain.handle("worktree:roots", async () => {
+  const root = worktreeRoot();
+  return [...new Set([root, await fs.realpath(root).catch(() => root)])];
+});
+// The git calls below wait for the login environment, so they run with the merged PATH.
+ipcMain.handle("worktree:status", async (_event, worktreePath, base) => {
+  await environmentReady;
+  return worktreeStatus(worktreePath, base);
+});
+// The renderer sends what the user saw (base, status, chat) and the project; main re-checks after closing the chat's agent.
+// The path and branch are read from git as they are now, so a branch renamed after creation is found as it is.
+ipcMain.handle("worktree:remove", async (_event, worktreePath, options = {}) => {
+  const { force, base, projectPath, chatId, seen } = options;
+  await environmentReady;
+  return removeWorktree({
+    path: worktreePath,
+    root: worktreeRoot(),
+    projectPath,
+    base,
+    seen,
+    force: Boolean(force),
+    closeSession: typeof chatId === "string" ? () => agents.closeChat(chatId) : undefined,
+  });
+});
+ipcMain.handle("files-to-copy:read", async (_event, projectPath) => {
+  await environmentReady;
+  const { filesToCopy } = await projectSettings().get(projectPath);
+  return { filesToCopy, ...(await previewFilesToCopy(projectPath, filesToCopy)) };
+});
+ipcMain.handle("files-to-copy:preview", async (_event, projectPath, patterns) => {
+  await environmentReady;
+  return previewFilesToCopy(projectPath, patterns);
+});
+ipcMain.handle("files-to-copy:save", async (_event, projectPath, patterns) => {
+  await environmentReady;
+  const { filesToCopy } = await projectSettings().setFilesToCopy(projectPath, patterns);
+  return { filesToCopy, ...(await previewFilesToCopy(projectPath, filesToCopy)) };
+});
 // A new worktree starts on its prompt's first words; a better name replaces its branch's once Haiku
 // picks one, so the chat never waits on it.
 async function nameWorktree(sender, projectPath, created, prompt) {
@@ -117,8 +169,13 @@ async function nameWorktree(sender, projectPath, created, prompt) {
   if (name && !sender.isDestroyed()) sender.send("worktree:renamed", { projectPath, path: created.path, from: created.branch, name });
 }
 
-ipcMain.handle("worktree:create", async (event, request) => {
-  const created = await createWorktree(request);
+ipcMain.handle("worktree:create", async (event, { projectPath, baseBranch, prompt }) => {
+  // Only these fields come from the renderer: the worktree folder and the files copied into it are main's call.
+  const request = { projectPath, baseBranch, prompt };
+  await environmentReady;
+  // The files are copied into the folder git just made; the rename that follows only changes the branch, so the path holds.
+  const created = await createWorktree({ ...request, root: worktreeRoot(), copyPatterns: (await projectSettings().get(projectPath)).filesToCopy });
+  if (created.copy?.notes.length) console.warn("Milagre worktree file copy:", created.copy.notes.join(" "));
   const project = await readProject(request.projectPath);
   const listed = Object.values(project.state.worktrees).find((item) => item.name === created.branch);
   if (!listed) throw new Error(`Created ${created.branch}, but git did not list it as a worktree.`);

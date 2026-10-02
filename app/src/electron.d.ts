@@ -4,6 +4,11 @@ import type { AttentionNotice } from "./lib/attention";
 import type { WorktreeRename } from "./lib/worktree-rename";
 import type { AgentCliStatus, AgentModels, DiffStat, EditorInfo, AgentEvent, AgentStartTurnRequest, CoordinatorState, OpenProject, PermissionDecision, PermissionMode, QuestionAnswers, SkillCatalog, UsageSnapshot, WorktreeRequest } from "./model";
 
+import type { WorktreeStatus } from "./lib/archive";
+
+/** Which patterns apply to new worktrees, and the files they match in the main checkout. */
+export type FilesToCopy = { source: "worktreeinclude" | "setting" | "default"; worktreeInclude: string | null; matches: string[] };
+
 export type UpdateState = { status: "idle" | "checking" | "up-to-date" | "downloading" | "downloaded" | "error"; version: string | null; progress: number };
 
 declare global {
@@ -15,6 +20,21 @@ declare global {
       getProjectImage: (projectPath: string) => Promise<string | null>;
       getAppVersion: () => Promise<string>;
       createWorktree: (request: WorktreeRequest) => Promise<{ project: OpenProject & { state: CoordinatorState }; worktreeId: number }>;
+      /** The folders Milagre keeps its worktrees in (the configured one and its real path). */
+      getWorktreeRoots: () => Promise<string[]>;
+      /** What archiving would lose from a worktree. Rejects when git can't tell. */
+      getWorktreeStatus: (worktreePath: string, base: string) => Promise<WorktreeStatus>;
+      /**
+       * Removes a worktree Milagre made and its branch; `force` discards what it holds. Main closes the chat's agent
+       * and checks again against `seen`, the status the user saw. Rejects with git's message, or a message that
+       * says the worktree changed after it was checked.
+       */
+      removeWorktree: (worktreePath: string, options: { force: boolean; base: string; projectPath: string; chatId: string; seen: WorktreeStatus }) => Promise<{ removed: boolean; branch: string | null; branchDeleted: boolean }>;
+      /** The project's saved "Files to copy" patterns, with what the effective patterns match now. */
+      readFilesToCopy: (projectPath: string) => Promise<FilesToCopy & { filesToCopy: string[] }>;
+      /** What patterns would match, without saving them. `.worktreeinclude` still wins. */
+      previewFilesToCopy: (projectPath: string, patterns: string[]) => Promise<FilesToCopy>;
+      saveFilesToCopy: (projectPath: string, patterns: string[]) => Promise<FilesToCopy & { filesToCopy: string[] }>;
       /** A new worktree's branch got the name picked for its chat, a few seconds after it was created. */
       onWorktreeRenamed: (callback: (rename: WorktreeRename) => void) => () => void;
       /** Lines the worktree adds and removes against its base, or null outside a repository. */
