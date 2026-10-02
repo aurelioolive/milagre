@@ -359,6 +359,7 @@ export function ChatComposer({
       {!isNewChat && <div aria-hidden className={`chat-top-blur pointer-events-none absolute inset-x-0 top-0 z-10 h-16 transition-opacity duration-200 ${scrolled ? "opacity-100" : "opacity-0"}`} />}
       {!isNewChat && findOpen && onFindClose && <FindBar rootRef={root} focusSignal={findSignal} onClose={onFindClose} />}
       {!isNewChat && <MessageScroller
+        key={messages[0]?.session_id ?? "new"}
         navigation="rail"
         followOutput
         smooth
