@@ -86,6 +86,25 @@ test("hides unavailable providers and labels segments for screen readers", () =>
   assert.equal(usageLabel(claude(), "remaining"), "Claude usage: Session 27% left, Weekly 39% left");
 });
 
+test("the sidebar shows a provider only when it has numbers", () => {
+  const codexMissing: ProviderUsage = { provider: "codex", status: "unavailable", windows: [], updatedAt: at(0), message: "Codex CLI not found." };
+  const claudeErrored = claude({ status: "error", windows: [], message: "Couldn't reach Claude." });
+  const claudeLastKnown = claude({ status: "error", message: "Couldn't reach Claude." });
+  const codexOk: ProviderUsage = { provider: "codex", status: "ok", windows: claude().windows, updatedAt: at(0) };
+  assert.deepEqual(visibleProviders({ providers: [claudeErrored, codexOk] }).map((item) => item.provider), ["codex"]);
+  assert.deepEqual(visibleProviders({ providers: [claudeLastKnown, codexOk] }).map((item) => item.provider), ["claude", "codex"]);
+  assert.deepEqual(visibleProviders({ providers: [claudeErrored, codexMissing] }), []);
+  assert.deepEqual(visibleProviders({ providers: [claude({ status: "ok", windows: [] }), codexMissing] }), []);
+});
+
+test("numbers seeded from the saved cache count as numbers for the sidebar", () => {
+  const cached: UsageSnapshot = { providers: [{ provider: "claude", status: "ok", windows: claude().windows, updatedAt: at(0) }] };
+  const seeded = seedSnapshot(null, cached)!;
+  assert.deepEqual(visibleProviders(seeded).map((item) => item.provider), ["claude"]);
+  // A provider with nothing saved and nothing read yet stays hidden.
+  assert.deepEqual(visibleProviders({ providers: [{ provider: "codex", status: "error", windows: [], updatedAt: at(0), message: "Couldn't read usage." }] }), []);
+});
+
 test("shows used or remaining percent", () => {
   assert.equal(shownPercent(73, "used"), 73);
   assert.equal(shownPercent(73, "remaining"), 27);

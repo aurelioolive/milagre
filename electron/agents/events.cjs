@@ -17,7 +17,10 @@
 //                                           an approval the turn waits on (see permissions.cjs)
 //   { type: "question-request", ...request } and { type: "question-resolved", requestId, outcome }
 //                                           questions the turn waits on (see questions.cjs)
-//   { type: "turn-completed" } | { type: "turn-cancelled" } | { type: "turn-failed", message }
+//   { type: "turn-completed" } | { type: "turn-cancelled" } | { type: "turn-failed", message, notice?, login? }
+//                                           notice: the message is one Milagre wrote (a full sentence that names the CLI
+//                                           and the fix), shown as it is; other messages are the agent's own error text.
+//                                           login: the agent isn't logged in; its session is closed so the next message starts a fresh one
 // Exactly one of the last three ends every turn.
 
 const { claudeStep, claudeStepResult, codexStep, codexStepResult, thinkingEnd, thinkingStep } = require("./steps.cjs");
@@ -26,8 +29,72 @@ const MILAGRE_INSTRUCTIONS = "You are an agent inside Milagre, an agent developm
 const RESUME_FAILED_MESSAGE = "Couldn't resume this chat's earlier agent session; it may have been deleted. Send your message again to continue in a fresh session.";
 const TERMINAL_TYPES = new Set(["turn-completed", "turn-failed", "turn-cancelled"]);
 
+// What a turn fails with when an agent's CLI can't run it. Each names the fix; the next message checks again.
+const CLI_NAMES = { claude: "Claude Code", codex: "Codex" };
+const INSTALL_COMMANDS = { claude: "curl -fsSL https://claude.ai/install.sh | bash", codex: "npm install -g @openai/codex" };
+const UPDATE_COMMANDS = { claude: "claude update", codex: "codex update" };
+const LOGIN_COMMANDS = { claude: "claude auth login", codex: "codex login" };
+
+// A tracing log line: "2026-10-02T00:59:00.724526Z ERROR codex_core::tools::router: error=…". The prefix says
+// nothing a reader needs.
+const LOG_PREFIX = /^(?:\d{4}-\d\d-\d\dT[\d:.]+Z?\s+)?(?:TRACE|DEBUG|INFO|WARN|ERROR)(?:\s+|$)(?:[\w.-]+(?:::[\w.-]+)*:(?:\s+|$))?/;
+
+// The last non-empty line a CLI printed, without terminal colours and without a log line's timestamp, level
+// and module, and whether it was a log line.
+function readLastLine(text) {
+  const raw = String(text ?? "").replace(/\x1b\[[0-9;]*m/g, "").split("\n").map((item) => item.trim()).filter(Boolean).at(-1) ?? "";
+  const logged = LOG_PREFIX.test(raw);
+  const line = logged ? raw.replace(LOG_PREFIX, "") : raw;
+  return { line: line.length > 300 ? `${line.slice(0, 299)}…` : line, logged };
+}
+
+// The last line a CLI printed, for an error message.
+const lastLine = (text) => readLastLine(text).line;
+
+const withoutPeriod = (text) => text.replace(/\.$/, "");
+
 function missingCliMessage(name) {
-  return `Couldn't find the ${name} CLI. Install it and make sure it's on your PATH, then try again.`;
+  return `Milagre couldn't find ${CLI_NAMES[name]}. Install it with \`${INSTALL_COMMANDS[name]}\`, then send your message again.`;
+}
+
+function cliTooOldMessage(name, version, minimum) {
+  return `Milagre needs ${CLI_NAMES[name]} ${minimum} or later, and you have ${version}. Run \`${UPDATE_COMMANDS[name]}\` in a terminal, then send your message again.`;
+}
+
+function cliBrokenMessage(name, command, detail) {
+  const reason = lastLine(detail);
+  return `${CLI_NAMES[name]} (${command}) didn't start${reason ? `: ${withoutPeriod(reason)}` : ""}. Check that it runs in a terminal, then send your message again.`;
+}
+
+function loginMessage(name) {
+  return `${CLI_NAMES[name]} isn't logged in. Run \`${LOGIN_COMMANDS[name]}\` in a terminal, then send your message again.`;
+}
+
+// The reason is the last line, with a log line's prefix dropped. A process the OS killed with nothing left to
+// say gets its signal instead.
+function crashMessage(name, detail, { signal } = {}) {
+  const { line } = readLastLine(detail);
+  const reason = signal && !line ? `${CLI_NAMES[name]} exited with signal ${signal}` : line;
+  return `${CLI_NAMES[name]} stopped unexpectedly${reason ? `: ${withoutPeriod(reason)}` : ""}. Send your message again to continue this chat.`;
+}
+
+// Codex passes some API errors on as raw JSON: {"type":"error","status":400,"error":{"message":"…"}}.
+function codexErrorText(error) {
+  const message = error?.message || "Codex could not finish this turn.";
+  try {
+    return JSON.parse(message)?.error?.message || message;
+  } catch {
+    return message;
+  }
+}
+
+// A turn failure made of one of Milagre's own messages; the renderer shows it without an "Agent error:" prefix.
+const failedWith = (message, extra = {}) => ({ type: "turn-failed", message, notice: true, ...extra });
+
+// A turn Codex couldn't authenticate: codexErrorInfo is "unauthorized", or an HTTP failure with status 401.
+function codexUnauthorized(error) {
+  const info = error?.codexErrorInfo;
+  return info === "unauthorized" || (Boolean(info) && typeof info === "object" && Object.values(info).some((detail) => detail?.httpStatusCode === 401));
 }
 
 function isTerminal(event) {
@@ -49,6 +116,9 @@ function textDelta(state, text) {
 // the Agent call that started them is the step.
 function mapClaudeMessage(message, state) {
   const events = [];
+  // Claude Code answers a turn it can't authenticate with a reply of its own ("Not logged in · Please run
+  // /login") marked authentication_failed, then a failed result.
+  if (message.type === "assistant" && message.error === "authentication_failed") state.authFailed = true;
   if (message.type === "system" && message.subtype === "init" && message.session_id && message.session_id !== state.sessionId) {
     state.sessionId = message.session_id;
     events.push({ type: "session-started", nativeId: message.session_id });
@@ -95,7 +165,9 @@ function mapClaudeMessage(message, state) {
   }
   if (message.type === "result") {
     if (message.subtype === "success" && !message.is_error) events.push({ type: "turn-completed" });
+    else if (state.authFailed) events.push(failedWith(loginMessage("claude"), { login: true }));
     else events.push({ type: "turn-failed", message: (message.errors?.length ? message.errors.join("\n") : message.result) || "Claude could not finish this turn." });
+    state.authFailed = false;
   }
   return events;
 }
@@ -142,7 +214,9 @@ function mapCodexNotification(method, params, state) {
     // A late completion for an earlier turn must not end the one running now.
     if (state.turnId && turn.id && turn.id !== state.turnId) return [];
     if (turn.status === "interrupted") return [{ type: "turn-cancelled" }];
-    if (turn.status === "failed") return [{ type: "turn-failed", message: turn.error?.message || "Codex could not finish this turn." }];
+    // A 401 means "log in" only where OpenAI auth is required (state.requiresOpenaiAuth, from account/read); on an
+    // API key or a custom provider it is that provider's own error.
+    if (turn.status === "failed") return [codexUnauthorized(turn.error) && state.requiresOpenaiAuth === true ? failedWith(loginMessage("codex"), { login: true }) : { type: "turn-failed", message: codexErrorText(turn.error) }];
     return [{ type: "turn-completed" }];
   }
   return [];
@@ -166,4 +240,4 @@ function codexReasoning(method, item, state) {
   return [...started, { type: "step-completed", ...thinkingEnd(id, startedAt === undefined ? undefined : now(state) - startedAt, summary) }];
 }
 
-module.exports = { MILAGRE_INSTRUCTIONS, RESUME_FAILED_MESSAGE, isTerminal, mapClaudeMessage, mapCodexNotification, missingCliMessage };
+module.exports = { MILAGRE_INSTRUCTIONS, RESUME_FAILED_MESSAGE, cliBrokenMessage, failedWith, cliTooOldMessage, crashMessage, isTerminal, lastLine, loginMessage, mapClaudeMessage, mapCodexNotification, missingCliMessage };

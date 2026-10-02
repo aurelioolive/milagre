@@ -13,7 +13,7 @@ import {
   LaptopIcon,
   Link01Icon,
 } from "@hugeicons/core-free-icons";
-import type { EffortLevel, ModelCapability, AgentSession, ChatMessage as AppChatMessage, ChatStep, Isolation, ModelOption, ModelProvider, PermissionMode } from "../model";
+import type { AgentCliStatus, EffortLevel, ModelCapability, AgentSession, ChatMessage as AppChatMessage, ChatStep, Isolation, ModelOption, ModelProvider, PermissionMode } from "../model";
 import { isAttachableImage, MAX_IMAGES } from "./usePastedImages";
 import type { ImageDraft } from "./usePastedImages";
 import { PromptComposer } from "./PromptComposer";
@@ -106,6 +106,12 @@ interface ChatComposerProps {
   /** The model the open chat's running turn uses; the picker may already show another. */
   runModelName?: string;
   lockedProvider?: ModelProvider;
+  /** The models the picker offers (see mergeModels). */
+  models: ModelOption[];
+  /** How each agent's CLI stands, flagged in the model picker; null until it's known. */
+  cliStatus: AgentCliStatus | null;
+  /** The model picker was opened; the status is checked again. */
+  onModelPickerOpen: () => void;
   selectedModel: ModelOption;
   onModelChange: (model: ModelOption) => void;
   capability: ModelCapability;
@@ -248,6 +254,9 @@ export function ChatComposer({
   waitingStepIds,
   runModelName,
   lockedProvider,
+  models,
+  cliStatus,
+  onModelPickerOpen,
   selectedModel,
   onModelChange,
   capability,
@@ -391,6 +400,9 @@ export function ChatComposer({
           sendBlocked={sendBlocked}
           running={isSending}
           lockedProvider={lockedProvider}
+          models={models}
+          cliStatus={cliStatus}
+          onModelPickerOpen={onModelPickerOpen}
           selectedModel={selectedModel}
           onModelChange={onModelChange}
           capability={capability}

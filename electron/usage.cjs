@@ -240,7 +240,9 @@ function withLastGood(result, last, nowMs) {
 }
 
 function createUsageReader(deps = {}) {
-  const { readClaude = readClaudeUsage, readCodex = readCodexUsage, now = Date.now, store = createUsageStore() } = deps;
+  // `ready` resolves once the login environment is applied: opened from Finder the app's PATH is bare until then,
+  // and the Codex lookup starts `codex` from it.
+  const { readClaude = readClaudeUsage, readCodex = readCodexUsage, now = Date.now, store = createUsageStore(), ready = () => undefined } = deps;
   const readProvider = async (provider, read) => {
     const { blocked } = store.get(provider);
     let result;
@@ -257,7 +259,8 @@ function createUsageReader(deps = {}) {
   };
   let inFlight = null;
   return function readUsage() {
-    inFlight ??= Promise.all([readProvider("claude", readClaude), readProvider("codex", readCodex)])
+    inFlight ??= Promise.resolve().then(ready).catch(() => {})
+      .then(() => Promise.all([readProvider("claude", readClaude), readProvider("codex", readCodex)]))
       .then((providers) => ({ providers }))
       .finally(() => {
         inFlight = null;
