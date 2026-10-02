@@ -9,6 +9,11 @@ const { PendingQuestions, claudeQuestionRequest, claudeQuestionResult } = requir
 // the user, through canUseTool, before edits and commands its rules don't already allow.
 const CLAUDE_MODES = { ask: "default", auto: "acceptEdits", full: "bypassPermissions" };
 
+// Claude Code's built-in terse output style. Unlike text appended to the system prompt, which the SDK
+// records with a conversation and ignores on later turns and resumes, the style applies to new chats, to
+// resumed chats and to the running query, all through applyFlagSettings before the turn's message.
+const CONCISE_STYLE = "Concise";
+
 // Claude Code prints this when --resume names a session it no longer has.
 const MISSING_CONVERSATION = /No conversation found/i;
 
@@ -92,7 +97,7 @@ class ClaudeSession {
     }
   }
 
-  async beginTurn({ prompt, images = [], model, permissionMode, effort, ultracode = false }) {
+  async beginTurn({ prompt, images = [], model, permissionMode, effort, ultracode = false, replies }) {
     const turnId = randomUUID();
     Object.assign(this.state, { turnId, hasText: false });
     this.permissions.setMode(permissionMode);
@@ -115,6 +120,7 @@ class ClaudeSession {
           this.effort = effort;
           this.ultracode = ultracode;
         }
+        await this.applyReplyStyle(replies);
       }
     } catch (error) {
       this.finishTurn({ type: "turn-failed", message: error.message });
@@ -133,6 +139,20 @@ class ClaudeSession {
     this.inbox.push(userMessage(prompt, images));
     this.emit({ type: "turn-started", turnId });
     return { turnId, steered: false };
+  }
+
+  // Concise is Claude Code's flag-layer outputStyle; Normal clears it (null), which falls back to the style
+  // in the user's own Claude settings, exactly what the session would have without Milagre. A CLI that
+  // rejects the style costs only the style: it is dropped for this session, never retried, and the turn runs.
+  async applyReplyStyle(replies) {
+    const wanted = replies === "concise" && !this.styleFailed ? CONCISE_STYLE : null;
+    if (wanted === this.outputStyle) return;
+    try {
+      await this.query.applyFlagSettings({ outputStyle: wanted });
+      this.outputStyle = wanted;
+    } catch {
+      this.styleFailed = true;
+    }
   }
 
   // A message for the running turn goes straight into Claude Code's input. Claude Code picks it up at
@@ -176,6 +196,7 @@ class ClaudeSession {
     this.mode = mode;
     this.effort = effort;
     this.ultracode = ultracode;
+    this.outputStyle = null;
     this.query = query({
       prompt: this.inbox,
       options: {

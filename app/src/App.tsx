@@ -35,6 +35,8 @@ import SidebarNav from "./components/SidebarNav";
 import { SettingsNav, SettingsPanel } from "./components/Settings";
 import type { SettingsSection } from "./components/Settings";
 import { getSettings, useApplyTheme, useSettings } from "./lib/settings";
+import { EditorLinks, Notice } from "./components/editor-links";
+import { openInEditor } from "./lib/editors";
 import { renameWorktree } from "./lib/worktree-rename";
 import { PermissionCard } from "./components/agents/PermissionCard";
 import { QuestionCard } from "./components/agents/QuestionCard";
@@ -162,7 +164,7 @@ function App() {
   const run = project && selectedSession ? agentRuns.runs[chatKey(project.path, selectedSession.id)] : undefined;
   const isSending = preparing || Boolean(run);
   const usage = useUsage();
-  const { showUsageInSidebar } = useSettings();
+  const { showUsageInSidebar, keepAwake } = useSettings();
   const runningCount = Object.keys(agentRuns.runs).length;
   const previousRunningCount = useRef(runningCount);
 
@@ -272,6 +274,15 @@ function App() {
     const worktree = latest?.worktrees[latest.sessions[sessionId]?.worktree_id ?? -1];
     if (worktree) void window.milagre.revealWorktree(worktree.path).catch(() => {});
   }
+
+  function openChatInEditor(sessionId: number) {
+    const latest = stateRef.current;
+    const worktree = latest?.worktrees[latest.sessions[sessionId]?.worktree_id ?? -1];
+    if (worktree) void openInEditor(worktree.path);
+  }
+
+  // The main process keeps the Mac awake while a turn runs, if the setting says so.
+  useEffect(() => { void window.milagre.setKeepAwake(keepAwake).catch(() => {}); }, [keepAwake]);
 
   // A chat that waits on the user while Milagre is in the background gets a system notification.
   useEffect(() => window.milagre.onAgentEvent(({ chatId, event }) => {
@@ -416,6 +427,7 @@ function App() {
       permissionMode: mode,
       effort: effortFor(capabilityFor(model, capabilities), effort),
       ultracode: capabilityFor(model, capabilities).ultracode && ultracode,
+      replies: getSettings().claudeReplies,
       prompt: body || "Describe the attached images.",
       images,
       resumeId: chatSession.native_session_id,
@@ -528,6 +540,7 @@ function App() {
           onRename: (id, title) => patchChat(Number(id), { title }),
           onMarkUnread: (id, unread) => patchChat(Number(id), { unread }),
           onReveal: (id) => revealChat(Number(id)),
+          onOpenInEditor: (id) => openChatInEditor(Number(id)),
           onArchive: (id) => archiveChat(Number(id)),
         }}
         onNewChat={startNewChat}
@@ -544,6 +557,7 @@ function App() {
       <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent pr-3 pb-3">
         {view === "settings" && <SettingsPanel section={settingsSection} models={models} />}
         <div className={`min-h-0 flex-1 overflow-hidden ${view === "chat" ? "" : "hidden"}`}>
+          <EditorLinks root={selectedWorktree?.path ?? project.path}>
           <ChatComposer
             key={project.path}
             messages={messages}
@@ -609,9 +623,11 @@ function App() {
               />
             ) : undefined}
           />
+          </EditorLinks>
         </div>
       </main>
       </div>
+      <Notice />
     </DotBackground>
   );
 }

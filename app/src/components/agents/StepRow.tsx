@@ -3,7 +3,9 @@ import type { ComponentProps } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AiBrain01Icon, Alert02Icon, ArrowDown01Icon, CommandLineIcon, File01Icon, PencilEdit02Icon, Search01Icon, Wrench01Icon } from "@hugeicons/core-free-icons";
 import type { ChatStep, StepKind } from "../../model";
+import { fileSpanIndex } from "../../lib/file-links";
 import { titleSpans } from "../../lib/reply-parts";
+import { useFileOpener } from "../editor-links";
 import { CodeBlock } from "../markdown/CodeBlock";
 import { Markdown } from "../markdown/Markdown";
 
@@ -17,10 +19,30 @@ function Icon({ icon, size = 14 }: { icon: IconData; size?: number }) {
   return <HugeiconsIcon icon={icon} size={size} strokeWidth={1.8} color="currentColor" />;
 }
 
+function FileLink({ text, title, shimmer, onOpen }: { text: string; title: string; shimmer: boolean; onOpen: () => void }) {
+  const open = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation();
+    onOpen();
+  };
+  return (
+    <code
+      role="link"
+      tabIndex={0}
+      title={title}
+      onClick={open}
+      onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); open(event); } }}
+      className={`pointer-events-auto cursor-pointer rounded-[4px] bg-field px-1 py-px font-mono text-[0.92em] text-ink decoration-ink-3 underline-offset-2 hover:underline ${shimmer ? "step-shimmer" : ""}`}
+    >{text}</code>
+  );
+}
+
 /** One tool call in a reply: what it did and how it went. A row with output, a diff or thinking opens to show it. */
 export const StepRow = memo(function StepRow({ step, waiting = false }: { step: ChatStep; waiting?: boolean }) {
   const [open, setOpen] = useState(false);
   const detailId = useId();
+  const opener = useFileOpener();
+  // A read or edit's file opens in the editor from its name; the click doesn't toggle the row.
+  const fileIndex = opener ? fileSpanIndex(step.title, step.file) : -1;
   const expandable = Boolean(step.detail);
   // A running tool's title shimmers; a tool waiting on the approval card is paused on the user.
   const shimmer = step.status === "running" && !waiting;
@@ -31,7 +53,9 @@ export const StepRow = memo(function StepRow({ step, waiting = false }: { step: 
     <>
       <span className={`shrink-0 ${step.status === "failed" ? "text-red" : "text-ink-3"}`}><Icon icon={KIND_ICONS[step.kind] ?? Wrench01Icon} /></span>
       <span className="min-w-0 flex-1 truncate">
-        {titleSpans(step.title).map((span, index) => (span.code
+        {titleSpans(step.title).map((span, index) => (index === fileIndex && opener && step.file
+          ? <FileLink key={index} text={span.text} title={opener.title} shimmer={shimmer} onOpen={() => opener.open(step.file!)} />
+          : span.code
           ? <code key={index} className={`rounded-[4px] bg-field px-1 py-px font-mono text-[0.92em] text-ink ${shimmer ? "step-shimmer" : ""}`}>{span.text}</code>
           : <span key={index} className={shimmer ? "step-shimmer" : undefined}>{span.text}</span>))}
       </span>
@@ -46,7 +70,13 @@ export const StepRow = memo(function StepRow({ step, waiting = false }: { step: 
   );
   return (
     <div data-slot="step" data-status={step.status} className="min-w-0">
-      {expandable ? (
+      {expandable && fileIndex >= 0 ? (
+        // The toggle covers the row and the file link sits above it, so no interactive element is nested in another.
+        <div className="relative">
+          <button type="button" aria-expanded={open} aria-controls={detailId} aria-label={`${step.title.replace(/`/g, "")}${state ? `, ${state}` : ""}`} onClick={() => setOpen((value) => !value)} className="absolute inset-0 rounded-[8px] transition-colors hover:bg-hover" />
+          <div className={`${rowClass} pointer-events-none relative`}>{content}</div>
+        </div>
+      ) : expandable ? (
         <button type="button" aria-expanded={open} aria-controls={detailId} onClick={() => setOpen((value) => !value)} className={`${rowClass} transition-colors hover:bg-hover hover:text-ink`}>{content}</button>
       ) : (
         <div className={rowClass}>{content}</div>

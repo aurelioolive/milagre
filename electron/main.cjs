@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, powerSaveBlocker, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
@@ -6,6 +6,8 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { promisify } = require("node:util");
 const { decodeImages } = require("./image-input.cjs");
+const { detectEditors, openInEditor } = require("./editors.cjs");
+const { KeepAwake } = require("./keep-awake.cjs");
 const { guardNavigation } = require("./links.cjs");
 const { AttentionNotifier } = require("./notifications.cjs");
 const { ClaudeSession } = require("./agents/claude-provider.cjs");
@@ -135,6 +137,21 @@ ipcMain.handle("worktree:reveal", async (_event, worktreePath) => {
   if (error) throw new Error(error);
 });
 
+// Installed editors are looked up once per run.
+let editorsFound = null;
+// Looked up after the login shell filled in PATH, so CLIs from a Finder launch are found.
+// A failed lookup is not kept, so the next call looks again.
+const editors = () => (editorsFound ??= environmentReady.then(() => detectEditors()).catch((error) => {
+  editorsFound = null;
+  throw error;
+}));
+ipcMain.handle("editor:list", async () => (await editors()).map(({ id, name }) => ({ id, name })));
+// Resolves to null on success, or a short message to show as a notice.
+ipcMain.handle("editor:open", async (_event, request) => {
+  if (!request || typeof request.root !== "string") return "File not found";
+  return openInEditor({ root: request.root, path: request.path, line: request.line, editor: request.editor }, { editors: await editors() });
+});
+
 // Brings the window back from a notification click and opens the chat it was about.
 function openChatFromNotification(chatId) {
   const window = BrowserWindow.getAllWindows().find((item) => !item.isDestroyed());
@@ -154,8 +171,14 @@ const notifier = new AttentionNotifier({
 
 ipcMain.handle("notification:attention", (_event, notice) => (Notification.isSupported() ? notifier.notify(notice) : false));
 
+// While any chat's turn runs the Mac stays awake (the screen can still sleep). On until the renderer
+// pushes the saved setting.
+const keepAwake = new KeepAwake({ powerSaveBlocker });
+ipcMain.handle("app:set-keep-awake", (_event, enabled) => keepAwake.setEnabled(enabled === true));
+
 function sendAgentEvent(chatId, event) {
   notifier.observe(chatId, event);
+  keepAwake.observe(chatId, event);
   // A turn that just failed on a login problem makes a "ready" picker status out of date.
   if (event.type === "turn-failed" && event.login) {
     for (const name of ["claude", "codex"]) if (event.message === loginMessage(name)) agentCliStatus.invalidate(name);
@@ -171,6 +194,7 @@ const agents = new SessionManager({
   createSession: (provider, options) => (provider === "codex"
     ? new CodexSession({ ...options, clientVersion: app.getVersion() })
     : new ClaudeSession(options)),
+  onSessionClosed: (chatId) => keepAwake.chatClosed(chatId),
   send: sendAgentEvent,
 });
 
@@ -281,6 +305,7 @@ app.on("before-quit", (event) => {
   if (agentsClosed) return;
   event.preventDefault();
   agentsClosed = true;
+  keepAwake.quit();
   // Agents run in their own process groups, so stop them before the app exits.
   Promise.race([agents.closeAll(), new Promise((resolve) => setTimeout(resolve, 5000))]).finally(() => app.quit());
 });

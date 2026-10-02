@@ -118,7 +118,7 @@ const scripts = {
 // Scripts get the query options (for canUseTool), an abort signal that interrupt() trips, a gate
 // the test opens with calls.release(), and next() to read a message sent while they run.
 function fakeSdk(script) {
-  const calls = { options: null, queries: 0, prompts: [], models: [], modes: [], thinking: [], interrupts: 0, release: () => {} };
+  const calls = { options: null, queries: 0, prompts: [], models: [], modes: [], thinking: [], flags: [], interrupts: 0, release: () => {} };
   const query = ({ prompt, options }) => {
     calls.queries += 1;
     calls.options = options;
@@ -139,6 +139,7 @@ function fakeSdk(script) {
       interrupt: async () => { calls.interrupts += 1; controller.abort(); markInterrupted(); },
       setModel: async (model) => { calls.models.push(model); },
       setPermissionMode: async (mode) => { calls.modes.push(mode); },
+      applyFlagSettings: async (settings) => { calls.flags.push(settings); },
       setMaxThinkingTokens: async (...args) => { calls.thinking.push(args); },
     });
   };
@@ -189,6 +190,76 @@ test("keeps one query across turns and applies model and mode changes", async (t
   assert.deepEqual(calls.models, ["claude-sonnet-5-5"]);
   assert.deepEqual(calls.modes, ["bypassPermissions"]);
   assert.equal(events.filter((event) => event.type === "session-started").length, 1);
+});
+
+test("Concise replies apply Claude Code's Concise output style before the first message, and Milagre's own prompt is unchanged", async (t) => {
+  const { session, events, calls } = claude(t);
+  await session.startTurn({ ...TURN, replies: "concise" });
+  await ended(events);
+  assert.equal("settings" in calls.options, false);
+  assert.deepEqual(calls.options.systemPrompt, { type: "preset", preset: "claude_code", append: MILAGRE_INSTRUCTIONS });
+  assert.deepEqual(calls.flags, [{ outputStyle: "Concise" }]);
+});
+
+test("Normal replies leave the output style alone", async (t) => {
+  const { session, events, calls } = claude(t);
+  await session.startTurn({ ...TURN, replies: "normal" });
+  await ended(events);
+  assert.equal("settings" in calls.options, false);
+  assert.deepEqual(calls.flags, []);
+});
+
+test("Concise keeps ultracode in the query's settings", async (t) => {
+  const { session, events, calls } = claude(t);
+  await session.startTurn({ ...TURN, replies: "concise", ultracode: true });
+  await ended(events);
+  assert.deepEqual(calls.options.settings, { ultracode: true });
+  assert.deepEqual(calls.flags, [{ outputStyle: "Concise" }]);
+});
+
+test("switching replies mid-chat applies and clears the style on the running query", async (t) => {
+  const { session, events, calls } = claude(t);
+  await session.startTurn({ ...TURN, replies: "normal" });
+  await ended(events);
+  await session.startTurn({ ...TURN, replies: "concise" });
+  await ended(events, 2);
+  assert.equal(calls.queries, 1);
+  assert.deepEqual(calls.flags, [{ outputStyle: "Concise" }]);
+
+  await session.startTurn({ ...TURN, replies: "concise" });
+  await ended(events, 3);
+  assert.equal(calls.flags.length, 1);
+
+  // null restores whatever style the user's own Claude settings give, instead of forcing "default".
+  await session.startTurn({ ...TURN, replies: "normal" });
+  await ended(events, 4);
+  assert.deepEqual(calls.flags, [{ outputStyle: "Concise" }, { outputStyle: null }]);
+});
+
+test("a resumed chat gets the style before its first message", async (t) => {
+  const { session, events, calls } = claude(t, { resumeId: "session-1" });
+  await session.startTurn({ ...TURN, replies: "concise" });
+  await ended(events);
+  assert.deepEqual(calls.flags, [{ outputStyle: "Concise" }]);
+  assert.equal(calls.options.resume, "session-1");
+});
+
+test("a CLI that rejects the style still runs the turn, and the style is not retried", async (t) => {
+  const { session, events, calls } = claude(t);
+  const original = calls;
+  const sdkQuery = session.loadSdk;
+  session.loadSdk = async () => {
+    const { query } = await sdkQuery();
+    return { query: (args) => Object.assign(query(args), { applyFlagSettings: async (settings) => { original.flags.push(settings); if ("outputStyle" in settings) throw new Error("Unknown output style: Concise"); } }) };
+  };
+  await session.startTurn({ ...TURN, replies: "concise" });
+  await ended(events);
+  assert.equal(events.at(-1).type, "turn-completed");
+  assert.equal(events.some((event) => event.type === "turn-failed"), false);
+  await session.startTurn({ ...TURN, replies: "concise" });
+  await ended(events, 2);
+  assert.equal(events.at(-1).type, "turn-completed");
+  assert.deepEqual(calls.flags, [{ outputStyle: "Concise" }]);
 });
 
 test("sends images as base64 content blocks", async (t) => {
