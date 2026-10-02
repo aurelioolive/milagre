@@ -21,7 +21,8 @@ import {
   sortedWorktrees,
 } from "./model";
 import { useAgentRuns } from "./components/useAgentRuns";
-import { chatKey, chatsRunning, chatsWaitingForUser, modelForChat, sentDecision, sentReply } from "./lib/agent-runs";
+import { chatInProject, chatKey, chatsRunning, chatsWaitingForUser, modelForChat, sentDecision, sentReply, sessionIdFromKey } from "./lib/agent-runs";
+import { attentionNotice } from "./lib/attention";
 import { chatMark, chatTitle, patchSession } from "./lib/chat-list";
 import { useWorktreeDiffs } from "./components/useWorktreeDiffs";
 import { usePastedImages } from "./components/usePastedImages";
@@ -240,6 +241,28 @@ function App() {
     const worktree = latest?.worktrees[latest.sessions[sessionId]?.worktree_id ?? -1];
     if (worktree) void window.milagre.revealWorktree(worktree.path).catch(() => {});
   }
+
+  // A chat that waits on the user while Milagre is in the background gets a system notification.
+  useEffect(() => window.milagre.onAgentEvent(({ chatId, event }) => {
+    const current = projectRef.current;
+    const latest = stateRef.current;
+    if (!current || !latest || !getSettings().notifyWhenWaiting || !chatInProject(current.path, chatId)) return;
+    const session = latest.sessions[sessionIdFromKey(chatId)];
+    const notice = attentionNotice(event, {
+      projectName: current.name,
+      worktreeName: session ? latest.worktrees[session.worktree_id]?.name : undefined,
+      chatTitle: session ? chatTitle(session, latest.messages.filter((message) => message.session_id === session.id)) : undefined,
+      provider: session?.provider,
+    });
+    if (notice && "requestId" in event) void window.milagre.notifyAttention({ chatId, requestId: event.requestId, ...notice }).catch(() => {});
+  }), []);
+
+  // Clicking a notification opens its chat.
+  useEffect(() => window.milagre.onOpenChat((chatId) => {
+    const current = projectRef.current;
+    const session = current && chatInProject(current.path, chatId) ? stateRef.current?.sessions[sessionIdFromKey(chatId)] : undefined;
+    if (session) openChat(session.id);
+  }), []);
 
   function startNewChat() {
     setSelectedSessionId(null);
