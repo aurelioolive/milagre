@@ -171,12 +171,50 @@ async function checkApp({ executable, args, profile, project, expectTheme, expec
         const { root } = await dock.call("DOM.getDocument");
         const { nodeId } = await dock.call("DOM.querySelector", { nodeId: root.nodeId, selector: "body" });
         const styles = await dock.call("CSS.getMatchedStylesForNode", { nodeId });
+        const computed = await dock.call("CSS.getComputedStyleForNode", { nodeId });
         console.error(
-          "Floating dock matched background rules:",
-          JSON.stringify(styles.matchedCSSRules.filter(({ rule }) => rule.style.cssProperties.some((property) => property.name.startsWith("background")))),
+          "Floating dock CSS computed background:",
+          JSON.stringify(computed.computedStyle.filter((property) => property.name.startsWith("background"))),
         );
+        console.error(
+          "Floating dock matched rules:",
+          JSON.stringify({ rules: styles.matchedCSSRules, inline: styles.inlineStyle, attributes: styles.attributesStyle }),
+        );
+        console.error(
+          "Floating dock color state:",
+          await readDock(`JSON.stringify({
+          background: getComputedStyle(document.body).backgroundColor,
+          bodyClass: document.body.className, parent: document.body.parentElement.tagName,
+          forcedColors: matchMedia('(forced-colors: active)').matches,
+          colorScheme: getComputedStyle(document.body).colorScheme,
+          forcedColorAdjust: getComputedStyle(document.body).forcedColorAdjust,
+          stripe: getComputedStyle(document.body).getPropertyValue('--stripe-bg'),
+          animations: document.getAnimations().filter(a => a.effect?.target === document.body).map(a => ({state:a.playState,frames:a.effect?.getKeyframes()})),
+          animationStyles: ${JSON.stringify(styles.cssAnimationStyles ?? [])}
+        })`),
+        );
+        await readDock("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+        console.error("Floating dock background after two frames:", await readDock("getComputedStyle(document.body).backgroundColor"));
+        const directory = path.join(process.env.RUNNER_TEMP || os.tmpdir(), "milagre-dock-diagnostics");
+        await fs.mkdir(directory, { recursive: true });
+        const shot = await dock.call("Page.captureScreenshot");
+        await fs.writeFile(path.join(directory, "opaque-dock.png"), Buffer.from(shot.data, "base64"));
         throw error;
       }
+      await dock.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+      await readDock(`document.documentElement.removeAttribute('data-floating-inbox');
+        getComputedStyle(document.body).backgroundColor`);
+      await readDock("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      const restoredCanvas = await readDock(`(() => {
+        document.documentElement.setAttribute('data-floating-inbox', '');
+        return { background: getComputedStyle(document.body).backgroundColor,
+          animations: document.body.getAnimations().length };
+      })()`);
+      assert.deepEqual(
+        restoredCanvas,
+        { background: "rgba(0, 0, 0, 0)", animations: 0 },
+        "reduced motion must not animate the floating canvas from opaque to transparent",
+      );
       await evaluate("window.milagre.toggleFloatingInbox()");
       const inboxPage = await waitFor(async () => (await pages()).find((page) => page.url.includes("floating-inbox=inbox")), "native inbox");
       const inbox = await connect(inboxPage.webSocketDebuggerUrl);
