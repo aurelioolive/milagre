@@ -208,12 +208,31 @@ test("a host from a newer app version is reused by an older desktop", async (t) 
   assert.equal((await again.call("daemon:status")).pid, pid);
 });
 
+test("a host whose close failed is stopped again and replaced, even from the same app version", async (t) => {
+  const clients = [];
+  const dataDir = await dataDirFor(t, "closing", clients);
+  const calls = await fakeHost(t, dataDir, { ...compatible, version: "1.2.3", closing: true });
+  const next = await ensureDaemon({ dataDir, version: "1.2.3", cwd: dataDir });
+  clients.push(next);
+  assert.ok(calls.includes("daemon:stop"));
+  const status = await next.call("daemon:status");
+  assert.equal(status.closing, false);
+  assert.notEqual(status.pid, undefined);
+});
+
+test("a closing host that does not stop is reported instead of connected to", async (t) => {
+  const dataDir = await dataDirFor(t, "closing-stubborn");
+  const calls = await fakeHost(t, dataDir, { ...compatible, version: "0.2.0", closing: true }, { stubborn: true });
+  await assert.rejects(ensureDaemon({ dataDir, version: "0.2.0", executable: "/never-run", startupTimeoutMs: 300 }), { code: "STALE_DAEMON" });
+  assert.ok(calls.includes("daemon:stop"));
+});
+
 test("an older host that does not stop is reported instead of connected to", async (t) => {
   const dataDir = await dataDirFor(t, "stubborn");
   const calls = await fakeHost(t, dataDir, { ...compatible, version: "0.1.0" }, { stubborn: true });
   await assert.rejects(ensureDaemon({ dataDir, version: "0.2.0", executable: "/never-run", startupTimeoutMs: 300 }), {
     code: "STALE_DAEMON",
-    message: /An older Milagre host is still running and did not stop\. Quit Milagre, then run: pkill -f 'milagre\.\* serve'/,
+    message: /A previous Milagre host is still running and did not stop\. Quit Milagre, then run: pkill -f 'milagre\.\* serve'/,
   });
   assert.ok(calls.includes("daemon:stop"));
 });

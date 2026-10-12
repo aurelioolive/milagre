@@ -105,3 +105,15 @@ test("release is idempotent and cannot remove a replacement ownership record", (
   second.release();
   assert.equal(fs.existsSync(lockPath), false);
 });
+
+test("release succeeds when the ownership record was already removed", (t) => {
+  const lockPath = lockFixture(t);
+  const ownership = acquireOwnership(lockPath);
+  fs.unlinkSync(path.join(lockPath, "owner.json"));
+  ownership.release();
+  ownership.release();
+  // The empty lock is taken over once it is old enough to be abandoned.
+  const old = new Date(Date.now() - 120_000);
+  fs.utimesSync(lockPath, old, old);
+  acquireOwnership(lockPath).release();
+});

@@ -47,7 +47,7 @@ function hostIsStale(hostVersion, appVersion) {
 }
 
 const failure = () =>
-  Object.assign(new Error("An older Milagre host is still running and did not stop. Quit Milagre, then run: pkill -f 'milagre.* serve'"), {
+  Object.assign(new Error("A previous Milagre host is still running and did not stop. Quit Milagre, then run: pkill -f 'milagre.* serve'"), {
     code: "STALE_DAEMON",
   });
 
@@ -87,7 +87,9 @@ async function ensureDaemon({
   if (process.platform === "win32") preparePrivateDirectory(dataDir);
   try {
     const existing = await compatibleClient(dataDir);
-    if (!hostIsStale(existing.status.version, version)) return existing;
+    // A host whose close failed (closing) still answers but refuses every command: stop it again, which retries its
+    // close, rather than reuse it.
+    if (!existing.status.closing && !hostIsStale(existing.status.version, version)) return existing;
     await stopStaleHost(existing, startupTimeoutMs);
   } catch (error) {
     if (!HOST_GONE.includes(error.code)) throw error;

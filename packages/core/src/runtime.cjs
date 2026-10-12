@@ -1714,6 +1714,7 @@ function createRuntime(options) {
     openProject: (projectPath, options) => accept(() => openProject(projectPath, options)),
     resumeRecentProjects: () => accept(resumeRecentProjects),
     environmentReady,
+    isClosing: () => closing,
     // Synchronous capture: the socket serializes this before another event can
     // mutate state, so its event watermark and run sequence describe one instant.
     snapshot: () => ({

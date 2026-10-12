@@ -55,6 +55,8 @@ export interface Runtime {
   focused(): Promise<void>;
   /** Unloads the idle Chats of every open Project and Link now, as the sweep does. */
   unloadIdle(): Promise<void>;
+  /** True once close() has begun, including after a failed close that has not been retried yet. */
+  isClosing(): boolean;
   close(): Promise<void>;
 }
 export function createRuntime(options: RuntimeOptions): Runtime;
