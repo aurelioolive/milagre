@@ -81,7 +81,9 @@ test("exclusive ownership rejects another profile owner and aliases of an open P
   await fs.symlink(project, alias);
   const other = make({ dataDir: dataDir + "-other" });
   await assert.rejects(other.openProject(alias), /already owned/);
+  assert.equal(first.isClosing(), false);
   await first.close();
+  assert.equal(first.isClosing(), true);
   await assert.rejects(first.invoke("project:current"), /closing/);
   await assert.rejects(first.openProject(project), /closing/);
   assert.equal((await other.openProject(alias)).path, project);
@@ -308,6 +310,8 @@ test("quit stops agents after a disk failure and can retry before releasing owne
     return rename(...args);
   });
   await assert.rejects(runtime.close(), /disk full/);
+  // A failed close keeps refusing commands until it is retried, and reports it so a host can be stopped again.
+  assert.equal(runtime.isClosing(), true);
   assert.ok(closed > 0, "providers must stop even when persistence fails");
   assert.throws(() => make(), /already owned/);
   fail = false;

@@ -241,6 +241,7 @@ test("desktop capability advertises methods, flush preserves a running turn, and
   const status = await desktop.call("daemon:status");
   assert.ok(status.capabilities?.includes("desktop-v1"));
   assert.ok(status.methods.includes("chat:send"));
+  assert.equal(status.closing, false);
   const notices = [];
   desktop.on("event", (event) => {
     if (event.channel === "notification:waiting") notices.push(event.payload);

@@ -602,6 +602,8 @@ async function startDaemon({
             protocolVersion: VERSION,
             dataDir,
             socketPath,
+            // A host whose close failed stays up refusing commands; a desktop stops it again instead of reusing it.
+            closing: runtime.isClosing(),
             // A capability tied to a method this connection may not call is not advertised to it (mobile push is push:*).
             capabilities: [
               "desktop-v1",

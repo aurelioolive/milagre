@@ -127,7 +127,17 @@ function acquireOwnership(lockPath) {
     path: lockPath,
     release() {
       if (released) return;
-      const current = JSON.parse(fs.readFileSync(file, "utf8"));
+      let current;
+      try {
+        current = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        // The record is already gone (removed by hand or by a cleanup), so there is no ownership left to give up.
+        // Throwing here would fail the host's close forever. The empty lock is left for abandoned() to take over:
+        // removing it could race a new owner that made the directory but has not written its record yet.
+        released = true;
+        return;
+      }
       if (current.token !== owner.token) throw new Error(`Milagre ownership changed: ${lockPath}`);
       fs.unlinkSync(file);
       fs.rmdirSync(lockPath);
