@@ -66,7 +66,14 @@ const PATHS = Object.freeze({
   "terminal:close": denied,
   // A design is read through its Chat, which must be in the folder.
   "artifact:get": ([value]) => [chatProject(value?.chatId)],
+  "artifact:apply": denied,
   "artifact:list": ([value]) => [chatProject(value?.chatId)],
+  "artifact:page-shares": ([value]) => [chatProject(value?.chatId)],
+  "artifact:sharing-status": denied,
+  "artifact:all-page-shares": denied,
+  "artifact:share-page": denied,
+  "artifact:revoke-page-share": denied,
+  "artifact:revoke-saved-page-share": denied,
   "artifact:add-comments": ([value]) => [chatProject(value?.chatId)],
   "artifact:comments": ([value]) => [chatProject(value?.chatId)],
   // Live Activities summarize every open Project and Link, beyond a confined demo folder.
@@ -108,6 +115,8 @@ const PATHS = Object.freeze({
   "linear:status": none,
   "linear:enabled:read": none,
   "linear:enabled:save": denied,
+  "designs:enabled:read": none,
+  "designs:enabled:save": denied,
   "linear:move-to-started:save": denied,
   // Issues name no folder. A Project's worktree issues name the Project's folder, like its other reads.
   "linear:issues": none,
@@ -137,6 +146,14 @@ const PATHS = Object.freeze({
   "accounts:remove": none,
   "mcp:accounts": none,
   "mcp:check": none,
+  // Local connection grants are computer-wide and must never be issued by a confined demo.
+  "local-mcp:status": denied,
+  "local-mcp:create": denied,
+  "local-mcp:update": denied,
+  "local-mcp:rotate": denied,
+  "local-mcp:revoke": denied,
+  "local-mcp:enableClient": denied,
+  "local-mcp:disableClient": denied,
   "usage:read": (args) => (args[0] == null ? [] : [args[0]]),
   "usage:cached": (args) => (args[0] == null ? [] : [args[0]]),
   "agent:answer-question": ([value]) => [chatProject(value?.chatId)],
