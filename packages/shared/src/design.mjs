@@ -1,13 +1,19 @@
 import { z } from "zod";
-import { designFontFamily, validDesignFontFamily } from "./design-fonts.mjs";
-export { designFontFamily } from "./design-fonts.mjs";
+import { designFontFamily, designFontFaces, validDesignFontFamily } from "./design-fonts.mjs";
+export { designFontFamily, designFontFaces, designInterHasGlyph, designInterWeight, designUsesInter } from "./design-fonts.mjs";
 import { designRenderBudget, visibleDesignTextLines } from "./design-render-limits.mjs";
 import { designLayout, designTextLayout } from "./design-layout.mjs";
+import { designIcons, designIconSuggestions } from "./design-icons.mjs";
+export { designIcons } from "./design-icons.mjs";
+export { DESIGN_INK, DESIGN_PLACEHOLDER, designDefaultFill } from "./design-paint.mjs";
+export { designInterFonts } from "./design-font-data.mjs";
 import { renderDesignSvg } from "./design-svg.mjs";
+import { designDefaultFill } from "./design-paint.mjs";
 import { synchronizeDesignComponents, designInstanceRoot } from "./design-components.mjs";
 import { DESIGN_CONTROLLER_SCRIPT } from "./design-controller-script.mjs";
 export { DESIGN_CONTROLLER_SCRIPT } from "./design-controller-script.mjs";
 export { designLayout, designTextLayout } from "./design-layout.mjs";
+export { designWarnings, designWarningText } from "./design-lint.mjs";
 export { createDesignInstance, detachDesignInstance, designInstanceRoot } from "./design-components.mjs";
 
 const id = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.-]{0,95}$/, "Use a stable layer id with letters, numbers, dots, underscores or dashes.");
@@ -27,7 +33,7 @@ const nodeSchema = z
   .object({
     id,
     name: z.string().max(160).optional(),
-    type: z.enum(["frame", "text", "rectangle", "ellipse", "image"]),
+    type: z.enum(["frame", "text", "rectangle", "ellipse", "image", "icon"]),
     parentId: id.optional(),
     x: coordinate.optional(),
     y: coordinate.optional(),
@@ -62,6 +68,13 @@ const nodeSchema = z
         "Images need an HTTPS URL or an inline PNG, JPEG, WebP, GIF or AVIF.",
       )
       .optional(),
+    icon: z
+      .string()
+      .max(64)
+      .optional()
+      .describe(
+        "Lucide icon name for an icon layer, such as x, check, chevron-left or battery-full. fill is its line color, strokeWidth its line weight (default 2).",
+      ),
     layout: z.enum(["free", "horizontal", "vertical"]).optional(),
     gap: size.optional(),
     padding: size.optional(),
@@ -113,6 +126,14 @@ function checkedDesignDocument(value, synchronize = true) {
   for (const node of document.nodes) {
     checkColor(node.fill);
     checkColor(node.stroke);
+    if (node.type === "icon") {
+      if (!node.icon) throw new Error(`Icon layer "${node.id}" needs an icon name.`);
+      if (!Object.hasOwn(designIcons, node.icon))
+        throw new Error(`Unknown icon "${node.icon}" on layer "${node.id}". Did you mean ${designIconSuggestions(node.icon).join(", ")}?`);
+      const unsupported = ["stroke", "radius", "text", "src"].filter((field) => node[field] !== undefined);
+      if (unsupported.length)
+        throw new Error(`Icon layer "${node.id}" can't use ${unsupported.join(", ")}. Use fill for its color and strokeWidth for its line weight.`);
+    } else if (node.icon !== undefined) throw new Error(`Only icon layers use "icon"; "${node.id}" is a ${node.type}.`);
     const seen = new Set([node.id]);
     let parentId = node.parentId;
     while (parentId !== undefined) {
@@ -297,7 +318,8 @@ const escape = (value) =>
 const safeJson = (value) => JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 function nodeStyles(document, node, box, parentBox, parentNode) {
-  const background = node.type === "text" ? "transparent" : designColor(document, node.fill, node.type === "frame" ? "transparent" : "#d8ded8");
+  // Transparent images (icons, cut-outs) show what is behind them; the grey placeholder marks an image still to add.
+  const background = node.type === "text" || node.type === "icon" ? "transparent" : designColor(document, node.fill, designDefaultFill(node));
   const parentStroke = parentNode?.stroke ? (parentNode.strokeWidth ?? 1) : 0;
   return [
     "position:absolute",
@@ -309,11 +331,11 @@ function nodeStyles(document, node, box, parentBox, parentNode) {
     `background:${background}`,
     `opacity:${node.opacity ?? 1}`,
     `border-radius:${node.type === "ellipse" ? "50%" : `${node.radius ?? 0}px`}`,
-    `border:${node.stroke ? (node.strokeWidth ?? 1) : 0}px solid ${designColor(document, node.stroke)}`,
+    `border:${node.stroke && node.type !== "icon" ? (node.strokeWidth ?? 1) : 0}px solid ${designColor(document, node.stroke)}`,
     "overflow:hidden",
     ...(node.type === "text"
       ? [
-          `color:${designColor(document, node.fill, "#202720")}`,
+          `color:${designColor(document, node.fill, designDefaultFill(node))}`,
           `font-size:${node.fontSize ?? 16}px`,
           `font-family:${designFontFamily(node.fontFamily)}`,
           `font-weight:${node.fontWeight ?? 400}`,
@@ -321,6 +343,7 @@ function nodeStyles(document, node, box, parentBox, parentNode) {
           `line-height:${node.lineHeight ?? 1.35}`,
           "font-kerning:none",
           "font-variant-ligatures:none",
+          'font-feature-settings:"calt" 0',
           "white-space:pre-wrap",
           "overflow-wrap:normal",
         ]
@@ -370,6 +393,12 @@ function designMarkup(document, bounds, textLayout, take) {
           `<img src="${escape(node.src)}" alt="${escape(node.name ?? "")}" draggable="false" style="width:100%;height:100%;object-fit:cover;pointer-events:none"/>`,
           node,
         );
+      } else if (node.type === "icon") {
+        const color = escape(designColor(document, node.fill, designDefaultFill(node)));
+        append(
+          `<svg viewBox="0 0 24 24" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" fill="none" stroke="${color}" stroke-width="${node.strokeWidth ?? 2}" stroke-linecap="round" stroke-linejoin="round" color="${color}" aria-hidden="true">${designIcons[node.icon]}</svg>`,
+          node,
+        );
       }
       render(node.id);
       append("</div>", node);
@@ -387,10 +416,11 @@ export function designHtml(value, options = {}) {
   const box = selected && bounds.get(selected);
   const interactive = options.interactive === true;
   const selection = `<div id="design-selection" style="position:absolute;box-sizing:border-box;pointer-events:none;border:2px solid #367bf5;z-index:2147483646;${box ? `left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px` : "display:none"}">${interactive ? '<span id="design-resize" style="position:absolute;right:-5px;bottom:-5px;width:10px;height:10px;border:1px solid #367bf5;background:white;pointer-events:auto;cursor:nwse-resize"></span>' : ""}</div>`;
+  const fontFaces = designFontFaces(document);
   const take = designRenderBudget("HTML");
   return (
     take(
-      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=${document.width}, initial-scale=1"><style>html,body{margin:0;padding:0;width:${document.width}px;height:${document.height}px;overflow:hidden}body{background:${escape(designColor(document, document.background, "#ffffff"))}}*{box-sizing:border-box}#design-root{position:relative;width:100%;height:100%;${interactive ? "touch-action:none;user-select:none;cursor:default" : ""}}</style></head><body><main id="design-root">`,
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=${document.width}, initial-scale=1"><style>html,body{margin:0;padding:0;width:${document.width}px;height:${document.height}px;overflow:hidden}body{background:${escape(designColor(document, document.background, "#ffffff"))}}*{box-sizing:border-box}#design-root{position:relative;width:100%;height:100%;${interactive ? "touch-action:none;user-select:none;cursor:default" : ""}}</style>${fontFaces ? `<style>${fontFaces}</style>` : ""}</head><body><main id="design-root">`,
     ) +
     designMarkup(document, bounds, textLayout, take) +
     take(
@@ -663,10 +693,21 @@ function previewController(design, selected, bounds) {
   });
 }
 
-export function designSvg(value) {
+/**
+ * embedFonts: false leaves Inter as a font-family reference, for callers that must stay small (a shared page of many designs).
+ * onCanvasOnly: true leaves out layers wholly outside the screen, for the agent's rasterizer.
+ */
+export function designSvg(value, { embedFonts = true, onCanvasOnly = false } = {}) {
   const document = validateDesignDocument(value);
   const textLayout = cachedTextLayout();
-  return renderDesignSvg(document, designLayout(document, textLayout), textLayout, (value, fallback) => designColor(document, value, fallback));
+  return renderDesignSvg(
+    document,
+    designLayout(document, textLayout),
+    textLayout,
+    (value, fallback) => designColor(document, value, fallback),
+    embedFonts ? designFontFaces(document) : "",
+    { onCanvasOnly },
+  );
 }
 
 /** A compact, editable screen used by the isolated desktop and phone fixtures. */
@@ -790,7 +831,8 @@ export function createExampleDesign() {
         x: 28,
         y: 582,
         width: 320,
-        height: 24,
+        height: 29,
+        heightMode: "hug",
         text: "What felt good today?",
         fill: "$ink",
         fontFamily: "Georgia, serif",

@@ -122,7 +122,7 @@ test("the tool definitions are read-only except delegate and conclude_negotiatio
   const refused = await runTool(linkedGit, { worktree: "/web", operation: "reset" });
   assert.equal(refused.isError, true);
   assert.match(refused.text, /^Invalid arguments: operation/);
-  assert.deepEqual(await runTool(linkedGit, { worktree: "/web", operation: "status" }), { text: "ok", isError: false });
+  assert.deepEqual(await runTool(linkedGit, { worktree: "/web", operation: "status" }), { text: "ok", images: [], isError: false });
   assert.deepEqual(calls, [["api#1", "/web", "status", {}]]);
 });
 
@@ -172,4 +172,38 @@ test("a canvas endpoint exposes one canonical shared transcript and rejects unli
   assert.match(await reads.overview("/external#2"), new RegExp(owner + "#7"));
   assert.match(await reads.readChat("/external#2", owner + "#7"), /Canonical reply/);
   await assert.rejects(reads.readChat("/external#2", scopeKey({ kind: "link", linkId: randomUUID() }) + "#7"), /isn't in a linked Worktree/);
+});
+
+test("runTool passes images through and mcpContent orders text before images", async () => {
+  const { runTool, mcpContent } = require("./linked-tools.cjs");
+  const definition = { name: "t", input: {}, run: async () => ({ text: '{"id":"a"}', images: [{ mime: "image/png", base64: "AAAA" }] }) };
+  const result = await runTool(definition, {});
+  assert.deepEqual(result, { text: '{"id":"a"}', images: [{ mime: "image/png", base64: "AAAA" }], isError: false });
+  assert.deepEqual(mcpContent(result), [
+    { type: "text", text: '{"id":"a"}' },
+    { type: "image", data: "AAAA", mimeType: "image/png" },
+  ]);
+  assert.deepEqual((await runTool({ name: "s", input: {}, run: async () => "plain" }, {})).images, []);
+  assert.deepEqual(
+    await runTool(
+      {
+        name: "e",
+        input: {},
+        run: async () => {
+          throw Error("boom");
+        },
+      },
+      {},
+    ),
+    { text: "boom", images: [], isError: true },
+  );
+});
+
+test("runTool reads text and images only from a plain object with a text key", async () => {
+  const run = async (value) => (await runTool({ name: "v", input: {}, run: async () => value }, {})).text;
+  assert.equal(await run(["a", "b"]), "a,b");
+  assert.equal(await run({ id: "x" }), "[object Object]");
+  assert.equal(await run(42), "42");
+  assert.equal(await run(null), "null");
+  assert.deepEqual(await runTool({ name: "t", input: {}, run: async () => ({ text: "only text" }) }, {}), { text: "only text", images: [], isError: false });
 });

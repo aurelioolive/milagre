@@ -1,5 +1,12 @@
 import type { z } from "zod";
 export { DESIGN_CONTROLLER_SCRIPT } from "./design-controller-script.mjs";
+/** Lucide icon name to SVG inner markup. */
+export const designIcons: Record<string, string>;
+export const designInterFonts: Record<"400" | "500" | "600" | "700", string>;
+/** The color text and icons draw in when they name no fill. */
+export const DESIGN_INK: "#202720";
+/** The grey a shape, or an image still to add, paints when it names no fill. */
+export const DESIGN_PLACEHOLDER: "#d8ded8";
 /** Build-time only: regenerate the checked-in controller after editing its source. */
 export function buildDesignControllerScript(): string;
 
@@ -16,7 +23,7 @@ export interface DesignDocument {
 export interface DesignNode {
   id: string;
   name?: string;
-  type: "frame" | "text" | "rectangle" | "ellipse" | "image";
+  type: "frame" | "text" | "rectangle" | "ellipse" | "image" | "icon";
   parentId?: string;
   x?: number;
   y?: number;
@@ -38,6 +45,7 @@ export interface DesignNode {
   lineHeight?: number;
   textAlign?: "left" | "center" | "right";
   src?: string;
+  icon?: string;
   layout?: "free" | "horizontal" | "vertical";
   gap?: number;
   padding?: number;
@@ -79,10 +87,29 @@ export function createDesignInstance(
 export function detachDesignInstance(document: DesignDocument, instanceId: string): DesignOperation[];
 /** The frontmost visible layer at a screen coordinate, respecting clipped parent frames. */
 export function designNodeAt(document: DesignDocument, x: number, y: number): DesignNode | null;
+export interface DesignWarning {
+  id: string;
+  kind: "clipped-text" | "overflow" | "off-canvas" | "low-contrast" | "remote-image";
+  message: string;
+}
+/** Problems an agent can't see in JSON: cut-off text, layers outside their parent or the screen, unreadable text, remote images. */
+export function designWarnings(document: DesignDocument): DesignWarning[];
+/** At most 20 warning lines plus "…and N more", or "" when there are none. */
+export function designWarningText(warnings: DesignWarning[]): string;
 export function designColor(document: DesignDocument, value?: string, fallback?: string): string;
 /** Serialize plain family names as CSS, preserving generic fallback families. */
 export function designFontFamily(value?: string): string;
+/** CSS @font-face rules (data URIs) for the Inter weights a document's visible text uses, or "". */
+export function designFontFaces(document: DesignDocument): string;
+/** The measured Inter weight a requested weight renders with. */
+export function designInterWeight(fontWeight?: number): 400 | 500 | 600 | 700;
+/** Whether Inter is the first family in a font-family list, so the document renders in the embedded Inter. */
+export function designUsesInter(fontFamily?: string): boolean;
+/** What a layer paints when it names no fill: frames and images that have a source stay transparent. */
+export function designDefaultFill(node: Pick<DesignNode, "type" | "src">): string;
+/** Whether the bundled Inter subset has a glyph for this character; whitespace always counts as drawable. */
+export function designInterHasGlyph(character: string): boolean;
 export function designHtml(document: DesignDocument, options?: { interactive?: boolean; selectedId?: string | null }): string;
-/** A portable SVG with native shapes, text and image elements. JSON is the lossless design export. */
-export function designSvg(document: DesignDocument): string;
+/** A portable SVG with native shapes, text and image elements. Inter is embedded unless `embedFonts` is false. JSON is the lossless design export. */
+export function designSvg(document: DesignDocument, options?: { embedFonts?: boolean; onCanvasOnly?: boolean }): string;
 export function createExampleDesign(): DesignDocument;

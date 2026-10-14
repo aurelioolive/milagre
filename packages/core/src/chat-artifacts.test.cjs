@@ -4,9 +4,12 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { z } = require("zod");
+const { createExampleDesign } = require("@milagre/shared/design");
 const { createChatArtifacts, artifactToolDefinitions, htmlArtifactToolDefinitions, artifactCommentToolDefinitions } = require("./chat-artifacts.cjs");
 
 const CHAT = "/repo#3";
+// design_show and design_apply answer with the summary JSON on line 1, then notes and warnings.
+const firstLine = (result) => JSON.parse(result.text.split("\n", 1)[0]);
 const designDocument = () => ({
   schemaVersion: 1,
   width: 390,
@@ -288,8 +291,8 @@ test("removing a Chat deletes its designs and comments, and only its own", async
 
 test("editable designs persist their source and a preview, and survive a restarted store", async (t) => {
   const { api, tools, directory } = await fixture(t);
-  const shown = JSON.parse(await tools.design_show.run({ id: "welcome", title: "Welcome screen", document: designDocument() }));
-  assert.deepEqual(shown, { id: "welcome", title: "Welcome screen", version: 1, versions: 1, width: 390, height: 844, format: "design" });
+  const shown = firstLine(await tools.design_show.run({ id: "welcome", title: "Welcome screen", document: designDocument() }));
+  assert.deepEqual(shown, { id: "welcome", title: "Welcome screen", version: 1, versions: 1, width: 390, height: 844, format: "design", warnings: [] });
   const design = await api.get({ chatId: CHAT, id: shown.id });
   assert.equal(design.document.nodes[1].text, "Welcome");
   assert.match(design.html, /Welcome/);
@@ -344,7 +347,7 @@ test("a batch creates one immutable version with an updated source and preview",
   assert.match(updated.html, /Your next project/);
   assert.deepEqual(await api.get({ chatId: CHAT, id: "welcome", version: 1 }), { ...before, latest: 2, versions: 2 });
 
-  const edited = JSON.parse(await tools.design_apply.run({ id: "welcome", expectedVersion: 2, operations: [{ op: "delete", id: "button" }] }));
+  const edited = firstLine(await tools.design_apply.run({ id: "welcome", expectedVersion: 2, operations: [{ op: "delete", id: "button" }] }));
   assert.equal(edited.version, 3);
   assert.equal(edited.title, "Welcome");
   assert.equal(edited.html, undefined);
@@ -441,6 +444,8 @@ test("JSON and SVG exports use the requested immutable design version", async (t
   assert.equal(svg.mimeType, "image/svg+xml");
   assert.match(svg.content, /<svg/);
   assert.match(svg.content, /New title/);
+  assert.doesNotMatch(svg.content, /@font-face/, "fonts are not embedded in the agent's export");
+  assert.ok(svg.content.length < 20_000, `the agent's SVG stays small (${svg.content.length} characters)`);
   await assert.rejects(api.exportDesign({ chatId: CHAT, id: "welcome", format: "html" }), /Choose json or svg/);
 });
 
@@ -512,4 +517,159 @@ test("oversized rendered text never commits a new design or advances an existing
   const folder = await chatFolder(directory);
   assert.deepEqual(await fs.readdir(folder), ["welcome"]);
   assert.deepEqual((await fs.readdir(path.join(folder, "welcome"))).sort(), ["meta.json", "v1.design.json", "v1.html"]);
+});
+
+test("design_show and design_apply attach the rendered design and its warnings", async (t) => {
+  const { tools } = await fixture(t);
+  const shown = await tools.design_show.run({ id: "welcome", title: "Welcome", document: designDocument() });
+  assert.equal(firstLine(shown).version, 1);
+  assert.deepEqual(firstLine(shown).warnings, []);
+  assert.equal(shown.images.length, 1);
+  assert.equal(shown.images[0].mime, "image/png");
+  assert.match(shown.text, /\nLook at the image/);
+  const edited = await tools.design_apply.run({
+    id: "welcome",
+    expectedVersion: 1,
+    operations: [
+      {
+        op: "update",
+        id: "heading",
+        patch: { text: "A welcome heading long enough to wrap onto several lines inside a short box", heightMode: "fixed", height: 20 },
+      },
+    ],
+  });
+  assert.deepEqual(
+    firstLine(edited).warnings.map((warning) => warning.kind),
+    ["clipped-text"],
+  );
+  assert.match(edited.text, /- Text "heading" needs/);
+});
+
+test("a render failure still saves the version and returns the summary", async (t) => {
+  const { api } = await fixture(t);
+  const tools = Object.fromEntries(
+    artifactToolDefinitions(CHAT, api, undefined, {
+      renderPng: async () => {
+        throw new Error("wasm missing");
+      },
+    }).map((tool) => [tool.name, tool]),
+  );
+  const shown = await tools.design_show.run({ id: "welcome", title: "Welcome", document: designDocument() });
+  assert.equal(firstLine(shown).version, 1);
+  assert.deepEqual(shown.images, []);
+  assert.match(shown.text, /preview could not be rendered: wasm missing/);
+  assert.equal((await api.get({ chatId: CHAT, id: "welcome" })).version, 1);
+});
+
+test("a design_show that fails validation or conflicts still throws before anything is drawn", async (t) => {
+  const { tools } = await fixture(t);
+  await tools.design_show.run({ id: "welcome", title: "Welcome", document: designDocument() });
+  await assert.rejects(tools.design_show.run({ id: "welcome", title: "Again", document: designDocument(), expectedVersion: 5 }), /version|changed|conflict/i);
+  await assert.rejects(
+    tools.design_apply.run({ id: "welcome", expectedVersion: 9, operations: [{ op: "delete", id: "heading" }] }),
+    /version|changed|conflict/i,
+  );
+});
+
+test("the agent is told which fonts its image draws in Inter", async (t) => {
+  const { tools } = await fixture(t);
+  const stock = await tools.design_show.run({ id: "stock", title: "Stock", document: createExampleDesign() });
+  assert.match(stock.text, /\nYour image shows .*Georgia.* in Inter; the user sees the real font\.(\n|$)/);
+  const inter = await tools.design_show.run({ id: "inter", title: "Inter", document: designDocument() });
+  assert.doesNotMatch(inter.text, /Your image shows/);
+  const hidden = designDocument();
+  hidden.nodes.push({ id: "serif", type: "text", hidden: true, width: 100, height: 20, text: "x", fontFamily: "Georgia, serif" });
+  assert.doesNotMatch((await tools.design_show.run({ id: "hidden", title: "Hidden", document: hidden })).text, /Your image shows/);
+  const failing = Object.fromEntries(
+    artifactToolDefinitions(CHAT, (await fixture(t)).api, undefined, {
+      renderPng: async () => {
+        throw "plain string";
+      },
+    }).map((tool) => [tool.name, tool]),
+  );
+  const none = await failing.design_show.run({ id: "stock", title: "Stock", document: createExampleDesign() });
+  assert.doesNotMatch(none.text, /Your image shows/);
+  assert.match(none.text, /preview could not be rendered: plain string/);
+});
+
+test("a failing layout check still saves and returns the design with a note", async (t) => {
+  const { api } = await fixture(t);
+  const tools = Object.fromEntries(
+    artifactToolDefinitions(CHAT, api, undefined, {
+      warnings: () => {
+        throw new Error("measure failed");
+      },
+    }).map((tool) => [tool.name, tool]),
+  );
+  const shown = await tools.design_show.run({ id: "welcome", title: "Welcome", document: designDocument() });
+  assert.deepEqual(firstLine(shown).warnings, []);
+  assert.match(shown.text, /\nLayout warnings could not be computed: measure failed\./);
+  assert.equal(shown.images.length, 1);
+  assert.equal((await api.get({ chatId: CHAT, id: "welcome" })).version, 1);
+});
+
+test("the summary JSON carries at most 20 warnings and their total", async (t) => {
+  const { tools } = await fixture(t);
+  const document = designDocument();
+  for (let index = 0; index < 25; index++) {
+    document.nodes.push({ id: `off${index}`, type: "rectangle", x: 1000, y: 10 * index, width: 40, height: 8, fill: "#ff0000" });
+  }
+  const shown = await tools.design_show.run({ id: "many", title: "Many", document });
+  const summary = firstLine(shown);
+  assert.equal(summary.warnings.length, 20);
+  assert.equal(summary.warningCount, 25);
+  assert.match(shown.text, /…and 5 more/);
+  const few = firstLine(await tools.design_show.run({ id: "few", title: "Few", document: designDocument() }));
+  assert.equal(few.warningCount, undefined);
+});
+
+test("remote images are listed as notes, outside the warnings the agent must fix", async (t) => {
+  const { tools } = await fixture(t);
+  const document = designDocument();
+  document.nodes.push(
+    { id: "hero", type: "image", x: 24, y: 300, width: 342, height: 160, src: "https://example.com/hero.png" },
+    { id: "off", type: "rectangle", x: 1000, y: 10, width: 40, height: 8, fill: "#ff0000" },
+  );
+  const shown = await tools.design_show.run({ id: "remote", title: "Remote", document });
+  assert.deepEqual(
+    firstLine(shown)
+      .warnings.map((warning) => warning.kind)
+      .sort(),
+    ["off-canvas", "remote-image"],
+  );
+  const [, warnings = "", notes = ""] = /\nWarnings:\n([\s\S]*?)(?:\nNotes:\n([\s\S]*))?$/.exec(shown.text) ?? [];
+  assert.match(warnings, /"off" extends past/);
+  assert.doesNotMatch(warnings, /remote URL/);
+  assert.match(notes, /Image "hero" is a remote URL/);
+  assert.match(shown.text, /every item under Warnings/);
+});
+
+test("the agent is told which text layers its image leaves blank", async (t) => {
+  const { api, tools } = await fixture(t);
+  const document = designDocument();
+  document.nodes.push(
+    { id: "polish", type: "text", x: 24, y: 300, width: 300, height: 30, text: "Zażółć ✓" },
+    { id: "latin", type: "text", x: 24, y: 340, width: 300, height: 30, text: "Café — naïve “quotes” → 5 €\ttab" },
+    { id: "hiddenStar", type: "text", x: 24, y: 380, width: 300, height: 30, text: "★", hidden: true },
+  );
+  const shown = await tools.design_show.run({ id: "glyphs", title: "Glyphs", document });
+  assert.match(
+    shown.text,
+    /\nYour image can't draw some characters in "polish"; they are blank and the line may look cut there, but the user sees them\.(\n|$)/,
+  );
+  assert.doesNotMatch((await tools.design_show.run({ id: "plain", title: "Plain", document: designDocument() })).text, /can't draw/);
+
+  const many = designDocument();
+  for (const [index, text] of ["Привет", "日本語", "😀", "★", "ł", "ś", "✓"].entries())
+    many.nodes.push({ id: `t${index}`, type: "text", x: 24, y: 300 + index * 30, width: 300, height: 30, text });
+  assert.match((await tools.design_show.run({ id: "many", title: "Many", document: many })).text, /in "t0", "t1", "t2", "t3", "t4" and 2 more;/);
+
+  const failing = Object.fromEntries(
+    artifactToolDefinitions(CHAT, api, undefined, {
+      renderPng: async () => {
+        throw new Error("no wasm");
+      },
+    }).map((tool) => [tool.name, tool]),
+  );
+  assert.doesNotMatch((await failing.design_show.run({ id: "glyphs2", title: "Glyphs", document })).text, /can't draw/);
 });
