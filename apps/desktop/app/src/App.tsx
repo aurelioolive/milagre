@@ -2354,7 +2354,7 @@ function App() {
                     onStopAdvisor={(id) => controlAdvisor("stop", id)}
                     onRetryAdvisor={(id) => controlAdvisor("retry", id)}
                     waitingForSubagents={run?.waitingForSubagents}
-                    tasks={run?.tasks}
+                    plan={selectedSession?.plan}
                     contextUsage={run?.contextUsage ?? selectedSession?.contextUsage}
                     ports={project && selectedSession ? agentPorts[chatKey(project.path, selectedSession.id)] : undefined}
                     agentChatId={project && selectedSession ? chatKey(project.path, selectedSession.id) : undefined}

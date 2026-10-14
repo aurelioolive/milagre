@@ -67,6 +67,7 @@ import { useOpenProject } from "../use-open-project";
 import { ErrorNotice, GlassIconButton, IconButton, PageScroll, PillButton, PullDown, useStyles } from "../ui";
 import { PromptField } from "../prompt-field";
 import { ContextRing } from "../context-ring";
+import { PlanPanel, PlanPill, usePlanPanel } from "../plan-pill";
 import { useTheme } from "../theme";
 import { archiveFromPhone, showArchiveNotice } from "../archive";
 import { confirmSheet } from "../confirm-store";
@@ -456,6 +457,11 @@ export default function ChatScreen() {
     // The counters are the trigger; the rest is read as it stands when one moves.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [compactRequests]);
+  // The Tasks pill grows into its panel over the transcript; the panel is drawn at the screen's root, above the composer.
+  const planPanel = usePlanPanel(
+    params.id ? session.snapshot?.project?.state.sessions[Number(params.id)]?.plan : undefined,
+    `${session.snapshot?.project?.path}#${params.id}`,
+  );
   if (!session.client || (!session.snapshot && !wanted)) return <Redirect href="/" />;
   if (!session.snapshot || !targetMatches || needsWorktree) {
     return (
@@ -1024,7 +1030,7 @@ export default function ChatScreen() {
         <Stack.Screen options={{ title, headerTitle: () => header, headerBackVisible: false, gestureEnabled: false }} />
         {sidebar}
         {more}
-        <PanelSwipe panels={panels}>
+        <PanelSwipe panels={panels} covered={planPanel.phase !== "closed"}>
           {/* The header clearance is in paddingTop; an automatic iOS inset would add it a second time. */}
           <KeyboardChatScrollView
             key={scrollKey}
@@ -1516,6 +1522,7 @@ export default function ChatScreen() {
                       onPress={() => router.push({ pathname: "/permission-sheet", params: { chatId, ...(run ? { busy: "1" } : {}) } })}
                     />
                     <View style={{ flex: 1 }} />
+                    <PlanPill panel={planPanel} />
                     {contextUsage && contextUsage.size > 0 && params.id && (
                       <ContextRing
                         {...contextUsage}
@@ -1558,6 +1565,7 @@ export default function ChatScreen() {
             </View>
           </KeyboardStickyView>
         </PanelSwipe>
+        <PlanPanel panel={planPanel} />
       </View>
     </GenerativeUIProvider>
   );
