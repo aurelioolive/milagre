@@ -860,6 +860,15 @@ export function ChatComposer({
   const artifactChat = runtimeChat;
   const artifactSteps = useMemo(() => [...messages.flatMap((message) => message.steps ?? []), ...(streamingSteps ?? [])], [messages, streamingSteps]);
   const userMessages = useMemo(() => messages.filter((message) => message.role === "user").map(({ id, body }) => ({ id, body })), [messages]);
+  // What the user typed in this chat, oldest first, for Up/Down in the prompt. Host-sent context (delegations, reports) is left out.
+  const promptHistory = useMemo(
+    () =>
+      messages
+        .filter((message) => message.role === "user" && !message.context && message.body.trim())
+        .map((message) => message.body)
+        .filter((body, index, bodies) => body !== bodies[index - 1]),
+    [messages],
+  );
 
   function handleFileDrop(event: DragEvent<HTMLDivElement>) {
     const files = Array.from(event.dataTransfer.files);
@@ -1041,6 +1050,7 @@ export function ChatComposer({
                 projectPath={projectPath}
                 draft={draft}
                 onDraftChange={onDraftChange}
+                history={promptHistory}
                 onSend={onSend}
                 onStop={onStop}
                 onCompact={onCompact}

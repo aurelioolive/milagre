@@ -52,6 +52,8 @@ interface PromptComposerProps {
   projectPath: string;
   draft: string;
   onDraftChange: (draft: string) => void;
+  /** Prompts sent in this chat, oldest first; Up and Down at the field's first or last line step through them. */
+  history?: string[];
   onSend: () => void;
   onStop?: () => void;
   sendBlocked: boolean;
@@ -84,6 +86,8 @@ interface PromptComposerProps {
   contextUsage?: ContextUsage;
 }
 
+const NO_HISTORY: string[] = [];
+
 const POPOVER_GAP = 12;
 // In the tall layout the controls sit on the composer's bottom row, so a popover opens just above its own button.
 const POPOVER_BUTTON_GAP = 8;
@@ -114,6 +118,7 @@ export function PromptComposer({
   projectPath,
   draft,
   onDraftChange,
+  history = NO_HISTORY,
   onSend,
   onStop,
   sendBlocked,
@@ -182,6 +187,12 @@ export function PromptComposer({
   });
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [rowBox, setRowBox] = useState<{ top: number; height: number } | null>(null);
+
+  // Where Up/Down stands in `history`, and the draft to restore past its newest entry.
+  const browsing = useRef<{ index: number; stash: string } | null>(null);
+  useEffect(() => {
+    browsing.current = null;
+  }, [history]);
 
   const [caret, setCaret] = useState(draft.length);
   const token = dismissed ? null : promptToken(draft, Math.min(caret, draft.length));
@@ -312,6 +323,7 @@ export function PromptComposer({
 
   // Sending moves on from whatever was being picked, and the composer's layout may change under an open popover.
   function send() {
+    browsing.current = null;
     setModelOpen(false);
     setPermissionOpen(false);
     setPlusOpen(false);
@@ -360,6 +372,27 @@ export function PromptComposer({
     inputRef.current?.focus();
   }
 
+  // Up on the first line steps back through sent prompts, Down on the last line steps forward and finally restores
+  // the draft that was there before, like a shell or VS Code's chat.
+  function recall(event: KeyboardEvent<HTMLTextAreaElement>) {
+    const up = event.key === "ArrowUp";
+    if ((!up && event.key !== "ArrowDown") || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey || event.nativeEvent.isComposing) return false;
+    const { selectionStart, selectionEnd, value } = event.currentTarget;
+    if (selectionStart !== selectionEnd || (up ? value.slice(0, selectionStart) : value.slice(selectionEnd)).includes("\n")) return false;
+    const current = browsing.current;
+    if (!current && !up) return false;
+    const index = (current?.index ?? history.length) + (up ? -1 : 1);
+    if (index < 0) return false;
+    event.preventDefault();
+    const stash = current?.stash ?? value;
+    const next = index < history.length ? history[index] : stash;
+    browsing.current = index < history.length ? { index, stash } : null;
+    setDismissed(true);
+    onDraftChange(next);
+    requestAnimationFrame(() => inputRef.current?.setSelectionRange(next.length, next.length));
+    return true;
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (menu && rows.length > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -374,6 +407,7 @@ export function PromptComposer({
         return;
       }
     }
+    if (recall(event)) return;
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       send();

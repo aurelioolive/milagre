@@ -1,4 +1,5 @@
-// Every Chat, and the new-chat screen, keeps its own draft while you move between them.
+// Every Chat, and the new-chat screen, keeps its own draft while you move between them,
+// and Up/Down in the prompt step through the prompts sent in that Chat.
 const fs = require("node:fs");
 const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
@@ -18,8 +19,10 @@ state.sessions = {
 state.messages = [
   { id: 4, session_id: 3, role: "user", body: "Alpha chat", context: null },
   { id: 6, session_id: 5, role: "user", body: "Beta chat", context: null },
+  { id: 7, session_id: 3, role: "user", body: "Second alpha prompt", context: null },
+  { id: 8, session_id: 3, role: "user", body: "Commit the changes", context: { kind: "git-action" } },
 ];
-state.next_id = 7;
+state.next_id = 9;
 window.milagre = new Proxy({
   getRuntimeConnection: async () => ({ connected: true }),
   getAgentPorts: async () => ({}),
@@ -58,6 +61,7 @@ async function browserChecks() {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     })()`);
   const promptIs = (text) => waitFor(`${prompt}?.value === ${JSON.stringify(text)}`);
+  const press = (key) => evaluate(`${prompt}.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}', bubbles: true, cancelable: true }))`);
   const setPermissionMode = async (mode) => {
     // Mode is "Ask", "Auto", or "Full"
     // Wait for the permission mode dropdown and click it
@@ -115,6 +119,23 @@ async function browserChecks() {
     await promptIs("Draft for a new chat");
     await screenshot("new-chat-restored");
     console.log("PASS: the new-chat draft comes back after visiting another Chat");
+
+    await openChat("Alpha chat");
+    await promptIs("Draft for alpha");
+    await press("ArrowUp");
+    await promptIs("Second alpha prompt");
+    await press("ArrowUp");
+    await promptIs("Alpha chat");
+    await press("ArrowUp");
+    await promptIs("Alpha chat");
+    await screenshot("history-oldest");
+    await press("ArrowDown");
+    await promptIs("Second alpha prompt");
+    await press("ArrowDown");
+    await promptIs("Draft for alpha");
+    await press("ArrowDown");
+    await promptIs("Draft for alpha");
+    console.log("PASS: Up and Down step through the Chat's sent prompts and restore the draft");
 
     // Test permission mode options
     await openChat("Alpha chat");
