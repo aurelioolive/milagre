@@ -484,3 +484,13 @@ test("the public preview image supports GET and HEAD without accessing snapshot 
   assert.equal((await routeRequest(new Request("https://share.milagre.cloud/og.png", { method: "PUT" }), env)).status, 405);
   assert.equal((await routeRequest(new Request("https://wrong.test/og.png"), env)).status, 404);
 });
+
+test("robots.txt blocks every crawler from every path", async () => {
+  const env = { PUBLIC_ORIGIN: "https://share.milagre.cloud", page: () => assert.fail("robots.txt must not open a page Durable Object") };
+  const robots = await routeRequest(new Request("https://share.milagre.cloud/robots.txt"), env);
+  assert.equal(robots.status, 200);
+  assert.match(robots.headers.get("content-type"), /^text\/plain/);
+  assert.equal(await robots.text(), "User-agent: *\nDisallow: /\n");
+  assert.equal(await (await routeRequest(new Request("https://share.milagre.cloud/robots.txt", { method: "HEAD" }), env)).text(), "");
+  assert.equal((await routeRequest(new Request("https://share.milagre.cloud/robots.txt", { method: "PUT" }), env)).status, 405);
+});

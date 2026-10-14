@@ -272,6 +272,10 @@ export function createQuotaService({ storage, limits, now = Date.now }) {
   };
 }
 
+/** No crawler may fetch shares, link preview bots included: Slack, Twitter/X and LinkedIn
+ * honor this and unfurl a bare URL. A crawler that ignores it still gets noindex on every page. */
+const ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
+
 /** Public routing is separate from internal DO requests: clients cannot reach the quota object. */
 export async function routeRequest(request, env) {
   const url = new URL(request.url);
@@ -279,6 +283,10 @@ export async function routeRequest(request, env) {
   if (!local && (url.protocol !== "https:" || url.origin !== env.PUBLIC_ORIGIN)) return response("Not found", 404);
   if (url.username || url.password) return response("Not found", 404);
   if (url.pathname === "/health" && request.method === "GET") return response("ok");
+  if (url.pathname === "/robots.txt") {
+    if (!["GET", "HEAD"].includes(request.method)) return response("Method not allowed", 405);
+    return response(request.method === "HEAD" ? null : ROBOTS_TXT);
+  }
   if (url.pathname === "/og.png") {
     if (!["GET", "HEAD"].includes(request.method)) return response("Method not allowed", 405);
     if (!env.previewImage) return response("Not found", 404);
