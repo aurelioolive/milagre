@@ -124,6 +124,7 @@ import { delegatedChats, useLinkedWork } from "./lib/linked-work";
 import { DraftChatComposer } from "./components/DraftChatComposer";
 import { TerminalPanel } from "./components/terminal/TerminalPanel";
 import { busyTerminals, newTerminal, useTerminalSync } from "./lib/terminal-actions";
+import { playNotificationChime } from "./lib/notification-chime";
 import type { ChatRowActions, SidebarRecent } from "./components/sidebar/ChatRow";
 
 // Not on screen at first paint, so each loads as its own chunk; the effect in App fetches them once the window is idle.
@@ -628,6 +629,7 @@ function App() {
     notifyOnCompletion,
     showDockBadge,
     notifyWhenWaiting,
+    notificationChime,
     showAttentionButton,
     floatingInbox,
   } = useSettings();
@@ -1098,6 +1100,12 @@ function App() {
   useEffect(() => {
     void window.milagre.setNotifyWhenWaiting(notifyWhenWaiting).catch(() => {});
   }, [notifyWhenWaiting]);
+
+  // A chat's notification goes silent and this window plays the Experimental chime instead.
+  useEffect(() => {
+    void window.milagre.setNotificationChime?.(notificationChime).catch(() => {});
+  }, [notificationChime]);
+  useEffect(() => window.milagre.onPlayChime?.(playNotificationChime), []);
 
   // A turn that ends in the open project while Milagre is in the background gets a completion alert.
   useEffect(
