@@ -171,6 +171,42 @@ test("skipped-busy and missed runs do not count, failed ones do", () => {
   assert.equal(store.runs(routine.id)[0].error, "boom");
 });
 
+test("finishRun twice leaves the Run and runCount alone and returns null", () => {
+  const { store, clock, file } = setup();
+  const routine = store.upsertHeartbeat({ ...base, maxRuns: 2 });
+  clock.t = routine.nextRunAt;
+  const [claim] = store.claimDue(clock.t);
+  clock.t += 1000;
+  assert.equal(store.finishRun(claim.run.id, { status: "acted", summary: "first" }).runCount, 1);
+  const before = fs.readFileSync(file, "utf8");
+  clock.t += 1000;
+  assert.equal(store.finishRun(claim.run.id, { status: "failed", error: "late" }), null);
+  assert.equal(store.get(routine.id).runCount, 1);
+  const [run] = store.runs(routine.id);
+  assert.equal(run.status, "acted");
+  assert.equal(run.summary, "first");
+  assert.equal(run.error, undefined);
+  assert.equal(run.endedAt, routine.nextRunAt + 1000);
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+});
+
+test("finishRun does not finish a missed Run and rejects statuses outside the finishing set", () => {
+  const { store } = setup();
+  const routine = store.upsertHeartbeat(base);
+  store.claimDue(routine.nextRunAt + 5 * 60_000);
+  const [missed] = store.runs(routine.id);
+  assert.equal(store.finishRun(missed.id, { status: "acted" }), null);
+  assert.equal(store.runs(routine.id)[0].status, "missed");
+  const next = setup();
+  const r = next.store.upsertHeartbeat(base);
+  next.clock.t = r.nextRunAt;
+  const [claim] = next.store.claimDue(next.clock.t);
+  for (const status of ["running", "missed", "bogus", undefined]) {
+    assert.throws(() => next.store.finishRun(claim.run.id, { status }), /Invalid run status/, String(status));
+  }
+  assert.equal(next.store.runs(r.id)[0].status, "running");
+});
+
 test("finishRun on an unknown run returns null", () => {
   const { store } = setup();
   assert.equal(store.finishRun("nope", { status: "acted" }), null);

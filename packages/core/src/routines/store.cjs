@@ -9,6 +9,7 @@ const MAX_RUNS_KEPT = 50;
 const UNIT_MS = { m: 60_000, h: 3600_000, d: 864e5 };
 const UPDATABLE = new Set(["name", "prompt", "cron", "timezone", "maxRuns", "expiresAt", "enabled"]);
 // These end a run's life in a count: skipped-busy and missed runs never ran, so they are not counted.
+const FINISH_STATUSES = new Set(["acted", "quiet", "failed", "skipped-busy"]);
 const COUNTED = new Set(["acted", "quiet", "failed"]);
 
 function parseExpiresIn(value) {
@@ -194,9 +195,12 @@ function createRoutineStore({ file, now = Date.now, id = () => crypto.randomByte
   }
 
   function finishRun(runId, { status, summary, error, chatId }) {
+    if (!FINISH_STATUSES.has(status)) throw new Error(`Invalid run status: ${JSON.stringify(status)}`);
     for (const routine of data.routines) {
       const run = (data.runs[routine.id] ?? []).find((item) => item.id === runId);
       if (!run) continue;
+      // Only a run still in flight can be finished; a second call must not recount it.
+      if (run.status !== "running") return null;
       finish(routine, run, status, { summary, error, chatId }, now());
       save();
       return copy(routine);
