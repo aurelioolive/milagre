@@ -366,3 +366,25 @@ test("returned Routines are copies", () => {
   assert.equal(store.get(routine.id).name, "check");
   assert.equal(store.get(routine.id).trigger.cron, "*/15 * * * *");
 });
+
+test("startRun appends a running Run without moving nextRunAt", () => {
+  const { store, clock } = setup();
+  const routine = store.upsertHeartbeat(base);
+  clock.t += 1000;
+  const started = store.startRun(routine.id, clock.t);
+  assert.equal(started.run.status, "running");
+  assert.equal(started.run.routineId, routine.id);
+  assert.equal(started.run.scheduledFor, clock.t);
+  assert.equal(started.routine.nextRunAt, routine.nextRunAt);
+  assert.equal(store.get(routine.id).nextRunAt, routine.nextRunAt);
+  assert.equal(store.runs(routine.id).length, 1);
+  assert.equal(store.finishRun(started.run.id, { status: "acted" }).runCount, 1);
+});
+
+test("startRun returns null for unknown and completed Routines", () => {
+  const { store, clock } = setup();
+  assert.equal(store.startRun("nope", clock.t), null);
+  const routine = store.upsertHeartbeat(base);
+  store.complete(routine.id, "done");
+  assert.equal(store.startRun(routine.id, clock.t), null);
+});

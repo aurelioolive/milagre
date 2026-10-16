@@ -194,6 +194,16 @@ function createRoutineStore({ file, now = Date.now, id = () => crypto.randomByte
     return claims;
   }
 
+  // A Run outside the schedule (run now): same shape as a claimed one, but nextRunAt stays where it is.
+  function startRun(routineId, at) {
+    const routine = find(routineId);
+    if (!routine || routine.completedAt) return null;
+    const run = { id: id(), routineId, scheduledFor: at, startedAt: at, status: "running" };
+    appendRun(routineId, run);
+    save();
+    return { routine: copy(routine), run: copy(run) };
+  }
+
   function finishRun(runId, { status, summary, error, chatId }) {
     if (!FINISH_STATUSES.has(status)) throw new Error(`Invalid run status: ${JSON.stringify(status)}`);
     for (const routine of data.routines) {
@@ -239,7 +249,7 @@ function createRoutineStore({ file, now = Date.now, id = () => crypto.randomByte
     save();
   }
 
-  return { enabled, setEnabled, list, get, runs, upsertHeartbeat, update, remove, claimDue, finishRun, complete, expireDue, recoverInterrupted };
+  return { enabled, setEnabled, list, get, runs, upsertHeartbeat, update, remove, claimDue, startRun, finishRun, complete, expireDue, recoverInterrupted };
 }
 
 module.exports = { createRoutineStore };
