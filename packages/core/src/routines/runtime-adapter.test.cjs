@@ -87,10 +87,32 @@ test("a beat into a Chat that's gone fails", async () => {
   await assert.rejects(adapter.send("/project#9", { body: "b", prompt: "p", context: { kind: "routine-run", routineId: "r1" } }), /no longer in its Project/);
 });
 
-test("the reply is the streamed text while the run holds it, else what was saved after the latest divider", () => {
-  assert.equal(fixture({ runs: { [chatId]: { text: "(pass) live" } } }).adapter.replyText(chatId), "(pass) live");
-  assert.equal(fixture().adapter.replyText(chatId), "(pass) CI green");
+test("the reply is the last saved reply after the latest divider, notes left out", () => {
+  assert.equal(fixture({ runs: { [chatId]: { text: "(pass) live" } } }).adapter.replyText(chatId), "(pass) CI green");
   assert.equal(routineReply({ messages: [{ session_id: 2, role: "assistant", body: "(pass) x", context: null }] }, 2), "");
+});
+
+const beat = (...replies) => ({
+  messages: [{ id: 1, session_id: 2, role: "user", body: "Check CI", context: { kind: "routine-run", runId: "r" } }, ...replies],
+});
+const reply = (body, steps = []) => ({ session_id: 2, role: "assistant", context: null, body, steps });
+
+test("only the text after the turn's last tool step counts", () => {
+  // "Let me check CI." → a tool call → "(pass) CI green", saved as one body with the step's offset.
+  const passed = beat(reply("Let me check CI.(pass) CI green", [{ id: "s1", kind: "shell", offset: 16 }]));
+  assert.equal(routineReply(passed, 2), "(pass) CI green");
+  const acted = beat(reply("(pass) looks fine at first.Actually CI failed, fixing it.", [{ id: "s1", kind: "shell", offset: 27 }]));
+  assert.equal(routineReply(acted, 2), "Actually CI failed, fixing it.");
+  // Thinking isn't a tool step; a turn that ends on a tool step said nothing after it.
+  assert.equal(routineReply(beat(reply("(pass) ok", [{ id: "t", kind: "thinking", offset: 9 }])), 2), "(pass) ok");
+  assert.equal(routineReply(beat(reply("(pass) ok", [{ id: "s", kind: "shell", offset: 9 }])), 2), "");
+});
+
+test("a turn a steering message split into several replies ends with the last of them", () => {
+  const split = beat(reply("(pass) nothing yet"), { session_id: 2, role: "user", body: "also check deploys", context: null }, reply("Deploy is broken."));
+  assert.equal(routineReply(split, 2), "Deploy is broken.");
+  const passedLast = beat(reply("Looking."), reply("(pass) all green"));
+  assert.equal(routineReply(passedLast, 2), "(pass) all green");
 });
 
 test("patchRunContext patches the divider of that Run", async () => {

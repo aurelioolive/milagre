@@ -68,9 +68,17 @@ async function fixture(t, { enable = true } = {}) {
           options.emit({ type: "turn-cancelled" });
         },
         close: async () => {},
-        finish: (text) => {
+        // Each string streams as text; a tool step runs between consecutive ones, as an agent's turn reads.
+        finish: (...texts) => {
           session.turnActive = false;
-          options.emit({ type: "text-delta", messageId: `reply-${session.turns.length}`, text });
+          texts.forEach((text, index) => {
+            if (index > 0) {
+              const id = `step-${session.turns.length}-${index}`;
+              options.emit({ type: "step-started", step: { id, kind: "shell", title: "Ran `gh pr checks`" } });
+              options.emit({ type: "step-completed", id, status: "done" });
+            }
+            options.emit({ type: "text-delta", messageId: `reply-${session.turns.length}`, text });
+          });
           options.emit({ type: "turn-completed" });
         },
       };
@@ -93,9 +101,9 @@ async function fixture(t, { enable = true } = {}) {
   const tool = (name) => session.options.linked.tools.find((item) => item.name === name);
   const list = async () => (await runtime.invoke("routines:list")).routines;
   const ends = () => published.filter((item) => item.type === "turn-completed").length;
-  const finish = async (text) => {
+  const finish = async (...texts) => {
     const before = ends();
-    session.finish(text);
+    session.finish(...texts);
     await waitUntil(() => ends() > before);
   };
   // Moves the routine clock past the next beat and runs one tick, then waits for what it dispatched to settle.
@@ -221,4 +229,37 @@ test("commands update, run now and delete a routine, each saying routines change
   // Off again: the tools go, and the tick stops acting.
   assert.deepEqual(await f.runtime.invoke("routines:enabled:save", [false]), { enabled: false });
   assert.deepEqual(await f.runtime.invoke("routines:enabled:read"), { enabled: false });
+});
+
+test("a beat that checks with a tool, then ends with (pass), is quiet; a (pass) followed by real work acts", async (t) => {
+  const f = await fixture(t);
+  await runTool(f.tool("heartbeat_create"), { name: "Babysit", prompt: "Check CI", every: "5m" });
+  await f.finish("ok");
+  await f.beat();
+  await waitUntil(() => f.session.turns.length === 2);
+  await f.finish("Let me check CI.", "(pass) CI green");
+  await eventually(async () => (await latestRun(f)).status === "quiet");
+  assert.equal((await latestRun(f)).summary, "CI green");
+  assert.equal(f.published.findLast((item) => item.type === "turn-completed").quiet, true);
+
+  await f.beat();
+  await waitUntil(() => f.session.turns.length === 3);
+  await f.finish("(pass) looks fine at first.", "Actually CI failed, fixing the test.");
+  await eventually(async () => (await latestRun(f)).status === "acted");
+  assert.equal(f.published.findLast((item) => item.type === "turn-completed").quiet, undefined);
+});
+
+test("a live session's routine tools stop working once the switch is off", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await runTool(f.tool("routine_list"), {})).isError, false);
+  await f.runtime.invoke("routines:enabled:save", [false]);
+  for (const [name, args] of [
+    ["routine_list", {}],
+    ["heartbeat_create", { name: "Babysit", prompt: "Check CI", every: "5m" }],
+  ]) {
+    const result = await runTool(f.tool(name), args);
+    assert.equal(result.isError, true, name);
+    assert.equal(result.text, "Routines are turned off in Settings › Experimental.");
+  }
+  assert.deepEqual(await f.list(), []);
 });

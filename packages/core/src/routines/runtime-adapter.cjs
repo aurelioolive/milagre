@@ -4,20 +4,26 @@ const { createRoutineScheduler } = require("./scheduler.cjs");
 const { createRoutineTools } = require("./tools.cjs");
 
 const OFF = "Routines are off. Turn them on in Settings › Experimental.";
+const TOOLS_OFF = "Routines are turned off in Settings › Experimental.";
 
 /**
- * What a heartbeat's turn replied: the replies saved after the Chat's latest routine-run divider (Milagre's own notes left
- * out), as `delegationReply` reads a Delegation's. The streamed run is folded away before the turn's end is published.
+ * How a heartbeat's turn ended: the text after its last tool step in its last reply. A beat that reads "Let me check
+ * CI." → a tool call → "(pass) CI green" ended with a pass, though the reply saved is the whole turn's text. The replies
+ * are the ones saved after the Chat's latest routine-run divider (Milagre's own notes left out), as `delegationReply`
+ * reads a Delegation's: the streamed run is folded away before the turn's end is published, so they are all there is.
  */
 function routineReply(state, sessionId) {
   const messages = (state?.messages ?? []).filter((message) => message.session_id === sessionId);
   const start = messages.findLastIndex((message) => message.role === "user" && message.context?.kind === "routine-run");
   if (start === -1) return "";
-  return messages
+  const last = messages
     .slice(start + 1)
-    .filter((message) => message.role === "assistant" && message.context == null && message.body?.trim())
-    .map((message) => message.body.trim())
-    .join("\n\n");
+    .findLast((message) => message.role === "assistant" && message.context == null && (message.body?.trim() || message.steps?.length));
+  if (!last) return "";
+  const body = last.body ?? "";
+  // Step offsets index the saved body (see savedSteps); thinking isn't a tool step.
+  const cut = Math.max(0, ...(last.steps ?? []).filter((step) => step.kind !== "thinking").map((step) => step.offset ?? 0));
+  return body.slice(cut).trim();
 }
 
 /**
@@ -62,11 +68,8 @@ function routineChats({ chats, store, cachedState, openState, isClosing }) {
       });
       return { started };
     },
-    replyText(chatId) {
-      const text = chats.runs[chatId]?.text;
-      if (text?.trim()) return text;
-      return routineReply(cachedState(projectOfKey(chatId)), sessionIdFromKey(chatId));
-    },
+    // Called on the turn's end, which is published after it was folded into the saved reply (ChatHost.receive).
+    replyText: (chatId) => routineReply(cachedState(projectOfKey(chatId)), sessionIdFromKey(chatId)),
     async patchRunContext(chatId, runId, patch) {
       await chats.patchMessageContext(
         projectOfKey(chatId),
@@ -116,16 +119,17 @@ function createRoutines({ file, chats, keepAwake, emit, cachedState, openState, 
 
   return {
     enabled: () => store.enabled(),
-    // An agent's write through a tool says routines changed, like a command's. The definitions are new on each call.
+    // A session keeps the tools it was given, so each one checks the switch when it runs. An agent's write through a
+    // tool says routines changed, like a command's. The definitions are new on each call.
     definitions: (chatId) =>
       tools.definitions(chatId).map((tool) => {
-        if (tool.readOnly) return tool;
         const { run } = tool;
         tool.run = async (input) => {
+          if (!store.enabled()) throw new Error(TOOLS_OFF);
           try {
             return await run(input);
           } finally {
-            changed();
+            if (!tool.readOnly) changed();
           }
         };
         return tool;
