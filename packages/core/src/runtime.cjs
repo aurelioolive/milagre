@@ -1440,7 +1440,7 @@ function createRuntime(options) {
       ...require("./advisor-tools.cjs").advisorToolDefinitions(chatId, advisors),
       // Milagre's own Linear sign-in, so agents don't reach for a Linear MCP or connector.
       ...(linear.enabled() ? linearToolDefinitions(linearTools) : []),
-      // Heartbeats on the agent's own Chat, while the Experimental switch is on.
+      // Heartbeats on the agent's own Chat, while the Experimental switch is on (none in a Link's Chats).
       ...(routines.enabled() ? routines.definitions(chatId) : []),
     ],
     createMcpServer: ({ toolsFor }) => ({ url: (chatId) => localMcp.chatUrl(chatId, toolsFor), close: async () => {} }),

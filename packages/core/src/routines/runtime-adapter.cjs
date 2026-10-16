@@ -1,4 +1,5 @@
 const { lastUserModel, projectOfKey, sessionIdFromKey } = require("@milagre/shared/agent-runs");
+const { isLinkScopeKey } = require("@milagre/shared/chat-scopes");
 const { createRoutineStore } = require("./store.cjs");
 const { createRoutineScheduler } = require("./scheduler.cjs");
 const { createRoutineTools } = require("./tools.cjs");
@@ -125,9 +126,10 @@ function createRoutines({ file, chats, keepAwake, emit, cachedState, openState, 
   return {
     enabled: () => store.enabled(),
     // A session keeps the tools it was given, so each one checks the switch when it runs. An agent's write through a
-    // tool says routines changed, like a command's. The definitions are new on each call.
+    // tool says routines changed, like a command's. The definitions are new on each call. A Chat on a Named Link gets
+    // none: heartbeats there are out of scope (see the spec's non-goals).
     definitions: (chatId) =>
-      tools.definitions(chatId).map((tool) => {
+      (isLinkScopeKey(projectOfKey(chatId)) ? [] : tools.definitions(chatId)).map((tool) => {
         const { run } = tool;
         tool.run = async (input) => {
           if (!store.enabled()) throw new Error(TOOLS_OFF);

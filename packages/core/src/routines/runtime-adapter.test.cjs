@@ -1,6 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { routineChats, routineReply } = require("./runtime-adapter.cjs");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createRoutines, routineChats, routineReply } = require("./runtime-adapter.cjs");
 
 const chatId = "/project#2";
 const state = {
@@ -150,4 +153,19 @@ test("send says whether the Chat was unread, and patchRunContext hands a session
   );
   await adapter.patchRunContext(chatId, "run-1", { quiet: true }, { unread: false });
   assert.deepEqual(patched[0][4], { unread: false });
+});
+
+test("a Chat on a Named Link gets no routine tools", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "routine-adapter-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const routines = createRoutines({
+    file: path.join(dir, "routines.json"),
+    chats: { turnSettings: () => null },
+    keepAwake: { setRoutinesActive() {} },
+    emit() {},
+    cachedState: () => undefined,
+    openState: async () => undefined,
+  });
+  assert.equal(routines.definitions("/project#2").length, 5);
+  assert.deepEqual(routines.definitions("milagre-link:0f8e2c1a-1b2c-4d5e-8f90-123456789abc#2"), []);
 });
