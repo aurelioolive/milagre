@@ -34,6 +34,13 @@ export function routineRunText(context, timeZone) {
   return context.summary ? `${time} · quiet: ${context.summary}` : `${time} · quiet`;
 }
 
+/** A folded run of quiet dividers as text: "2 quiet checks · last 10:30: CI green". */
+export function mergedRoutineRunText(merged, timeZone) {
+  const { count, last } = merged;
+  const summary = last.summary ? `: ${last.summary}` : "";
+  return `${count} quiet checks · last ${clock(last.at, timeZone)}${summary}`;
+}
+
 const isQuietRun = (message) => isRoutineRun(message) && message.context.quiet === true;
 
 /**

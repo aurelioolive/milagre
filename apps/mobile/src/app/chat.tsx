@@ -50,6 +50,8 @@ import { WorktreeLinkDivider } from "../worktree-link-divider";
 import { AccountSwitchDivider } from "../account-switch-divider";
 import { ChatReloadDivider } from "../chat-reload-divider";
 import { isChatReload, RELOAD_TEXT } from "@milagre/shared/chat-reload";
+import { RoutineRunDivider } from "../routine-run-divider";
+import { groupQuietRuns, isRoutineRun, routineRunText } from "@milagre/shared/routines";
 import { CompactionDivider } from "../compaction-divider";
 import { isHandoff } from "@milagre/shared/handoff";
 import { COMPACT_COMMAND, compactionText, isCompaction } from "@milagre/shared/compaction";
@@ -312,6 +314,8 @@ export default function ChatScreen() {
   // Long Chats mount their newest messages first; earlier ones load on request.
   const [shown, setShown] = useState({ key: scrollKey, count: PAGE });
   const visible = shown.key === scrollKey ? shown.count : PAGE;
+  // Quiet heartbeats fold into one line and their replies drop out.
+  const groupedMessages = useMemo(() => groupQuietRuns(messages), [messages]);
   async function showEarlier() {
     if (historyRead.current || historyAnchor.current || messages.length + remote <= visible) return;
     const request = {};
@@ -321,7 +325,8 @@ export default function ChatScreen() {
     try {
       if (messages.length <= visible) await historyPage.loadEarlier();
       if (currentScrollKey.current !== scrollKey) return;
-      const first = messages[Math.max(0, messages.length - visible)];
+      // A hidden heartbeat reply never lays out, so anchor on the first message after it that does.
+      const first = groupedMessages.slice(Math.max(0, messages.length - visible)).find((entry) => !entry.hidden)?.message;
       const y = first && messagePositions.current.get(first.id);
       historyAnchor.current = first && y !== undefined ? { id: first.id, y, offset: scrollOffset.current, key: scrollKey } : null;
       setShown({ key: scrollKey, count: visible + PAGE });
@@ -349,7 +354,9 @@ export default function ChatScreen() {
                 ? `Go to ${accountSwitchText(messages[index].context)}, ${index + 1} of ${messages.length}.`
                 : isChatReload(messages[index])
                   ? `Go to ${RELOAD_TEXT}, ${index + 1} of ${messages.length}.`
-                  : `Go to ${messageSender(messages[index])} message ${index + 1} of ${messages.length}. ${messages[index].body.slice(0, 88)}`,
+                  : isRoutineRun(messages[index])
+                    ? `Go to ${routineRunText(messages[index].context)}, ${index + 1} of ${messages.length}.`
+                    : `Go to ${messageSender(messages[index])} message ${index + 1} of ${messages.length}. ${messages[index].body.slice(0, 88)}`,
       })),
     [messages, handoffModels],
   );
@@ -1136,51 +1143,57 @@ export default function ChatScreen() {
                 style={{ alignSelf: "center" }}
               />
             )}
-            {messages.slice(-visible).flatMap((message) => [
+            {groupedMessages.slice(-visible).flatMap(({ message, hidden, merged }) => [
               ...(liveReply && message === pendingInput ? [liveReply] : []),
-              <View
-                key={message.clientMessageId ?? message.id}
-                nativeID={`chat-message-${message.id}`}
-                onLayout={({ nativeEvent: { layout } }) => {
-                  messagePositions.current.set(message.id, layout.y);
-                  const anchor = historyAnchor.current;
-                  if (anchor?.key === scrollKey && anchor.id === message.id) {
-                    historyAnchor.current = null;
-                    // From the offset when the page was asked for: the native position keeping may have moved it already.
-                    const y = Math.max(0, anchor.offset + layout.y - anchor.y);
-                    scrollOffset.current = y;
-                    scroll.current?.scrollTo({ y, animated: false });
-                  }
-                  if (navigationTarget.current === message.id) {
-                    navigationTarget.current = null;
-                    scroll.current?.scrollTo({ y: Math.max(0, layout.y - insets.top - 72), animated: true });
-                  }
-                }}
-              >
-                {isHandoff(message) ? (
-                  <HandoffDivider context={message.context} models={handoffModels} onOpen={openBrief} />
-                ) : isWorktreeLinked(message) ? (
-                  <WorktreeLinkDivider context={message.context} client={session.client} onOpen={(title, text) => openBrief(text, title)} />
-                ) : isCompaction(message) ? (
-                  <CompactionDivider context={message.context} />
-                ) : isAccountSwitch(message) ? (
-                  <AccountSwitchDivider context={message.context} />
-                ) : isChatReload(message) ? (
-                  <ChatReloadDivider />
-                ) : (
-                  <ChatReply
-                    message={message}
-                    media={media}
-                    basePath={worktree?.path || project.path}
-                    chatId={chatId}
-                    designChoice={designChoice}
-                    designsMoved={designsMoved}
-                    // A limit card offers other accounts only on the Chat's last message, with no turn running.
-                    limitProjectPath={!run && !pending && message === messages[messages.length - 1] ? project.path : undefined}
-                    onActivity={openActivity}
-                  />
-                )}
-              </View>,
+              ...(hidden
+                ? []
+                : [
+                    <View
+                      key={message.clientMessageId ?? message.id}
+                      nativeID={`chat-message-${message.id}`}
+                      onLayout={({ nativeEvent: { layout } }) => {
+                        messagePositions.current.set(message.id, layout.y);
+                        const anchor = historyAnchor.current;
+                        if (anchor?.key === scrollKey && anchor.id === message.id) {
+                          historyAnchor.current = null;
+                          // From the offset when the page was asked for: the native position keeping may have moved it already.
+                          const y = Math.max(0, anchor.offset + layout.y - anchor.y);
+                          scrollOffset.current = y;
+                          scroll.current?.scrollTo({ y, animated: false });
+                        }
+                        if (navigationTarget.current === message.id) {
+                          navigationTarget.current = null;
+                          scroll.current?.scrollTo({ y: Math.max(0, layout.y - insets.top - 72), animated: true });
+                        }
+                      }}
+                    >
+                      {isHandoff(message) ? (
+                        <HandoffDivider context={message.context} models={handoffModels} onOpen={openBrief} />
+                      ) : isWorktreeLinked(message) ? (
+                        <WorktreeLinkDivider context={message.context} client={session.client} onOpen={(title, text) => openBrief(text, title)} />
+                      ) : isCompaction(message) ? (
+                        <CompactionDivider context={message.context} />
+                      ) : isAccountSwitch(message) ? (
+                        <AccountSwitchDivider context={message.context} />
+                      ) : isChatReload(message) ? (
+                        <ChatReloadDivider />
+                      ) : isRoutineRun(message) ? (
+                        <RoutineRunDivider context={message.context} merged={merged} />
+                      ) : (
+                        <ChatReply
+                          message={message}
+                          media={media}
+                          basePath={worktree?.path || project.path}
+                          chatId={chatId}
+                          designChoice={designChoice}
+                          designsMoved={designsMoved}
+                          // A limit card offers other accounts only on the Chat's last message, with no turn running.
+                          limitProjectPath={!run && !pending && message === messages[messages.length - 1] ? project.path : undefined}
+                          onActivity={openActivity}
+                        />
+                      )}
+                    </View>,
+                  ]),
             ])}
             {!pendingInput && liveReply}
             {answerPreview && <ChatReply key="answers" message={answerPreview} media={media} chatId={chatId} onActivity={openActivity} />}

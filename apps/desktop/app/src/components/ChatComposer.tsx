@@ -25,6 +25,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon, GitBranchIcon, GitForkIcon, GitPullRequestIcon, LaptopIcon } from "@hugeicons/core-free-icons";
 import { LinearLogo } from "./ProviderLogo";
 import type { LinearIssue } from "@milagre/shared/linear";
+import type { RoutineRunContext } from "@milagre/shared/model";
 import type {
   AgentCliStatus,
   EffortLevel,
@@ -52,6 +53,8 @@ import { WorktreeLinkDivider } from "./WorktreeLinkDivider";
 import { AccountSwitchDivider } from "./AccountSwitchDivider";
 import { ChatReloadDivider } from "./ChatReloadDivider";
 import { isChatReload } from "@milagre/shared/chat-reload";
+import { groupQuietRuns, isRoutineRun } from "@milagre/shared/routines";
+import { RoutineRunDivider } from "./RoutineRunDivider";
 import { CompactionDivider } from "./CompactionDivider";
 import { advisorResultLabel, messageSender } from "@milagre/shared/advisor-result";
 import { LinkedMessageHeader, linkedContext } from "./LinkedMessage";
@@ -150,8 +153,11 @@ const MessageSection = memo(function MessageSection({
   limitInteractive = false,
   onOpenAccounts,
   models,
+  merged,
 }: {
   message: AppChatMessage;
+  /** Quiet heartbeats folded into this one: how many, and the last. */
+  merged?: { count: number; last: RoutineRunContext };
   isUser: boolean;
   models: ModelOption[];
   onRecommendationSelect: (option: string) => void;
@@ -177,6 +183,7 @@ const MessageSection = memo(function MessageSection({
   if (isCompaction(message)) return <CompactionDivider context={message.context} />;
   if (isAccountSwitch(message)) return <AccountSwitchDivider context={message.context} />;
   if (isChatReload(message)) return <ChatReloadDivider />;
+  if (isRoutineRun(message)) return <RoutineRunDivider context={message.context} merged={merged} />;
   const linked = linkedContext(message);
   const advisor = typeof message.context === "object" && message.context?.kind === "advisor-result" ? message.context : null;
   // A PR-blocker pill's message shows as a card, not as the skill prompt the agent read.
@@ -403,10 +410,12 @@ const MessageTranscript = memo(function MessageTranscript({
     isSending && (streamingText || streamingSteps?.length)
       ? { id: -1, session_id: messages.at(-1)?.session_id ?? -1, body: streamingText ?? "", context: null, role: "assistant", steps: streamingSteps }
       : undefined;
-  const transcript = messages.slice(start);
+  // Quiet heartbeats fold away; grouped over the whole Chat so a page boundary doesn't strand a hidden reply.
+  const grouped = useMemo(() => groupQuietRuns(messages), [messages]);
+  const transcript = grouped.slice(start).filter((entry) => !entry.hidden);
   if (streamingMessage) {
-    const pendingIndex = transcript.findIndex((message) => message.id === pendingMessageId);
-    transcript.splice(pendingIndex < 0 ? transcript.length : pendingIndex, 0, streamingMessage);
+    const pendingIndex = transcript.findIndex((entry) => entry.message.id === pendingMessageId);
+    transcript.splice(pendingIndex < 0 ? transcript.length : pendingIndex, 0, { message: streamingMessage });
   }
 
   const openingIds = openingMessages.current.ids;
@@ -430,10 +439,11 @@ const MessageTranscript = memo(function MessageTranscript({
           {historyLoading ? "Loading earlier messages..." : `Show earlier messages (${start + remote})`}
         </button>
       )}
-      {transcript.map((message) => (
+      {transcript.map(({ message, merged }) => (
         <MessageSection
           key={message.clientMessageId ?? message.id}
           message={message}
+          merged={merged}
           isUser={message.role === "user"}
           onRecommendationSelect={onRecommendationSelect}
           onUpdateCli={onUpdateCli}

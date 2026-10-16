@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupQuietRuns, isRoutineRun, parsePass, routineRunText } from "./routines.mjs";
+import { groupQuietRuns, isRoutineRun, mergedRoutineRunText, parsePass, routineRunText } from "./routines.mjs";
 
 test("parsePass reads a leading (pass) as quiet, with the summary after it", () => {
   assert.deepEqual(parsePass("(pass) CI green"), { quiet: true, summary: "CI green" });
@@ -31,6 +31,12 @@ test("routineRunText words the acted and the quiet divider", () => {
   assert.equal(routineRunText(context(), "UTC"), "Heartbeat · 13:15");
   assert.equal(routineRunText(context({ at: Date.UTC(2026, 9, 16, 13, 30), quiet: true, summary: "CI green" }), "UTC"), "13:30 · quiet: CI green");
   assert.equal(routineRunText(context({ quiet: true }), "UTC"), "13:15 · quiet");
+});
+
+test("mergedRoutineRunText counts the collapsed checks and words the last one", () => {
+  const last = context({ at: Date.UTC(2026, 9, 16, 13, 30), quiet: true, summary: "CI green" });
+  assert.equal(mergedRoutineRunText({ count: 2, last }, "UTC"), "2 quiet checks · last 13:30: CI green");
+  assert.equal(mergedRoutineRunText({ count: 5, last: { ...last, summary: undefined } }, "UTC"), "5 quiet checks · last 13:30");
 });
 
 test("routineRunText uses the given zone and a 24 hour clock", () => {

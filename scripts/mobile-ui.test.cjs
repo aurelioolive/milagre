@@ -1793,6 +1793,8 @@ function chatHost({
     "../compaction-divider": { CompactionDivider: "CompactionDivider" },
     "../account-switch-divider": { AccountSwitchDivider: "AccountSwitchDivider" },
     "../chat-reload-divider": { ChatReloadDivider: "ChatReloadDivider" },
+    "../routine-run-divider": { RoutineRunDivider: "RoutineRunDivider" },
+    "@milagre/shared/routines": require("@milagre/shared/routines"),
     "@milagre/shared/chat-reload": require("@milagre/shared/chat-reload"),
     "../handoff-brief-store": { showBrief() {} },
     "@milagre/shared/handoff": require("@milagre/shared/handoff"),
@@ -3590,6 +3592,40 @@ test("the message that continued a Chat on another account is a line, not a repl
   );
   const rail = find(tree, (node) => node.type === "MessageNavigation");
   assert.equal(rail.props.items.at(-1).label, "Go to Switched to me@work.com after the usage limit, 2 of 2.");
+});
+
+test("quiet heartbeats collapse into one line and their replies are hidden", () => {
+  const screen = chatHost();
+  screen.params.id = "42";
+  const state = screen.session.snapshot.project.state;
+  state.sessions[42] = { id: 42, provider: "claude" };
+  const run = (id, minute, summary) => ({
+    id,
+    session_id: 42,
+    role: "user",
+    body: "Heartbeat",
+    context: { kind: "routine-run", routineId: "r1", runId: `run${id}`, name: "Babysit", at: Date.UTC(2026, 9, 16, 10, minute), quiet: true, summary },
+  });
+  state.messages = [
+    { id: 1, session_id: 42, role: "user", body: "Watch CI" },
+    run(2, 15, "waiting"),
+    { id: 3, session_id: 42, role: "assistant", body: "(pass) waiting" },
+    run(4, 30, "CI green"),
+    { id: 5, session_id: 42, role: "assistant", body: "(pass) CI green" },
+  ];
+  const tree = screen.render();
+  const dividers = [];
+  find(tree, (node) => {
+    if (node.type === "RoutineRunDivider") dividers.push(node.props);
+    return false;
+  });
+  assert.equal(dividers.length, 1);
+  assert.equal(dividers[0].merged.count, 2);
+  assert.equal(dividers[0].merged.last.summary, "CI green");
+  assert.deepEqual(
+    transcriptMessages(screen).map((message) => message.id),
+    [1],
+  );
 });
 
 test("mobile navigation spans a long Chat with at most 15 lines and loads older targets before scrolling", () => {

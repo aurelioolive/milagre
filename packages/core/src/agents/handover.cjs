@@ -4,6 +4,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { chatTitle } = require("@milagre/shared/chats");
 const { compactionText } = require("@milagre/shared/compaction");
+const { routineRunText } = require("@milagre/shared/routines");
 const { claudeModel, codexModel, antigravityModel } = require("../git-text.cjs");
 
 // Handing a chat off to the other provider in place: the chat as a markdown transcript on disk, and a short brief
@@ -43,6 +44,8 @@ function renderTranscript(state, sessionId, { after } = {}) {
       parts.push(`## Handoff${failed}: ${providerName(message.context.from.provider)} → ${providerName(message.context.to.provider)}`);
     } else if (message.context?.kind === "worktree-linked" || message.context?.kind === "account-switch" || message.context?.kind === "reload") {
       parts.push(`## ${message.body}`);
+    } else if (message.context?.kind === "routine-run") {
+      parts.push(`## ${routineRunText(message.context)}`);
     } else if (message.context?.kind === "compaction") {
       parts.push(`## ${compactionText(message.context)}`);
     } else if (message.role === "assistant") {

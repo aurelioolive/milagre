@@ -245,3 +245,15 @@ test("a compaction the user asked for is a heading in the transcript, with the t
   assert.match(text, /## Compaction failed: 900k\n/);
   assert.doesNotMatch(text, /## User\n\n\/compact/);
 });
+
+test("a heartbeat is a heading in the transcript, not a user turn", () => {
+  const at = Date.UTC(2026, 9, 16, 10, 15);
+  const state = {
+    sessions: { 3: { id: 3, worktree_id: 1, agent_name: "main", status: "Created", provider: "claude" } },
+    worktrees: { 1: { id: 1, name: "main", path: "/work/app" } },
+    messages: [{ id: 1, session_id: 3, role: "user", body: "Heartbeat", context: { kind: "routine-run", routineId: "r", runId: "x", name: "Babysit", at } }],
+  };
+  const text = renderTranscript(state, 3);
+  assert.match(text, /## Heartbeat · \d\d:\d\d\n/);
+  assert.doesNotMatch(text, /## User/);
+});
