@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { AppState, Pressable, Text, TextInput, View } from "react-native";
+import { Alert, AppState, Pressable, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { DomWebView } from "@expo/dom-webview";
-import { ArrowLeft01Icon, ArrowRight01Icon, Cancel01Icon, CheckmarkCircle02Icon, PaintBoardIcon } from "@hugeicons/core-free-icons";
+import { ArrowLeft01Icon, ArrowRight01Icon, Cancel01Icon, CheckmarkCircle02Icon, Delete02Icon, PaintBoardIcon } from "@hugeicons/core-free-icons";
 import {
   artifactShell,
+  designCanvasShell,
   designFeedbackMessage,
   designFeedbackText,
+  designGroups,
   newCommentId,
   type Artifact,
   type ArtifactComment,
@@ -21,7 +23,7 @@ import type { ArtifactStep } from "@milagre/shared/reply-parts";
 import { postDesignMessage } from "./design-outbox";
 import { File, Paths } from "expo-file-system";
 import { useSession } from "./session";
-import { useArtifactCatalog } from "./use-design-catalog";
+import { markDesignDeleted, useArtifactCatalog } from "./use-design-catalog";
 import { Icon } from "./icons";
 import { CircleButton, PillButton, useStyles } from "./ui";
 import { useTheme } from "./theme";
@@ -138,8 +140,9 @@ export function DesignFeedbackCard({
                 style={{
                   width: 20,
                   height: 20,
+                  // The desktop canvas's pin: round, its point the top-left corner.
                   borderRadius: 10,
-                  borderBottomLeftRadius: 0,
+                  borderTopLeftRadius: 0,
                   alignItems: "center",
                   justifyContent: "center",
                   backgroundColor: resolved === undefined ? colors.accent : colors.green,
@@ -338,6 +341,12 @@ function ArtifactCard({ step, chatId, chosen, kind = "design" }: { step: Artifac
 }
 
 /**
+ * Feedback not sent yet, by Chat: leaving the designs keeps the comments and the choice until they are sent or deleted,
+ * as on desktop. In memory, for the app's life.
+ */
+const unsent = new Map<string, { notes: Record<string, DesignComment>; choice: ArtifactRef | null }>();
+
+/**
  * The Chat's designs full screen, the one a card opened first. The header steps between designs and the bar under the
  * design steps through its versions, comments on it, or chooses it. Comments and the choice wait for Send, which hands
  * them to the Chat as one message for the agent.
@@ -428,8 +437,14 @@ export function ArtifactSheet({
   const [sharePage, setSharePage] = useState(false);
   // Feedback waits here until Send: a comment per design version, and the design the user chose.
   const [editing, setEditing] = useState<string | null>(null);
-  const [notes, setNotes] = useState<Record<string, DesignComment>>({});
-  const [choice, setChoice] = useState<ArtifactRef | null>(null);
+  const feedbackKey = hostId && chatId ? `${hostId}|${chatId}|${kind === "html" ? "artifacts" : "designs"}` : null;
+  const [notes, setNotes] = useState<Record<string, DesignComment>>(() => (feedbackKey && unsent.get(feedbackKey)?.notes) || {});
+  const [choice, setChoice] = useState<ArtifactRef | null>(() => (feedbackKey && unsent.get(feedbackKey)?.choice) || null);
+  useEffect(() => {
+    if (!feedbackKey) return;
+    if (Object.values(notes).some((note) => note.text.trim()) || choice) unsent.set(feedbackKey, { notes, choice });
+    else unsent.delete(feedbackKey);
+  }, [feedbackKey, notes, choice]);
   useEffect(() => {
     if (feature.enabled === false && state.artifact?.format === "design") router.back();
   }, [feature.enabled, state.artifact?.format]);
@@ -438,7 +453,8 @@ export function ArtifactSheet({
     let live = true;
     source
       .call<ArtifactSummary[]>("artifact:list", [{ chatId }])
-      .then((list) => live && setDesigns(list.filter((design) => design.format === "design")))
+      // In the desktop canvas's order: group by group.
+      .then((list) => live && setDesigns(designGroups(list.filter((design) => design.format === "design")).flatMap((row) => row.designs)))
       .catch(() => live && setDesigns(null));
     return () => {
       live = false;
@@ -489,6 +505,7 @@ export function ArtifactSheet({
     if (!hostId || !chatId || !feedback || !source) return;
     // Each comment gets the id the agent resolves it by; the host records the comments once the message went.
     const comments = written.map((note) => ({ ...note, id: newCommentId() }));
+    if (feedbackKey) unsent.delete(feedbackKey);
     postDesignMessage(`${hostId}|${chatId}`, {
       kind: isHtml ? "artifacts" : "designs",
       text: designFeedbackMessage({ choice, comments }),
@@ -498,6 +515,32 @@ export function ArtifactSheet({
     });
     router.back();
   };
+  const remove = (design: Artifact) =>
+    Alert.alert(`Delete ${design.title}?`, "Every version of this design and the comments on it are deleted.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          if (!source || !chatId) return;
+          source
+            .call("artifact:delete", [{ chatId, id: design.id }])
+            .then(() => {
+              markDesignDeleted(source, chatId, design.id);
+              setNotes((current) => Object.fromEntries(Object.entries(current).filter(([, note]) => note.design.id !== design.id)));
+              setChoice((current) => (current?.id === design.id ? null : current));
+              setEditing(null);
+              const rest = designs?.filter((item) => item.id !== design.id) ?? [];
+              // The next design takes its place, or the one before when it was the last.
+              const next = designs?.[index + 1] ?? designs?.[index - 1];
+              setDesigns(rest);
+              if (next && next.id !== design.id) setShown({ id: next.id, version: null });
+              else router.back();
+            })
+            .catch((error: unknown) => Alert.alert("Could not delete the design", error instanceof Error ? error.message : String(error)));
+        },
+      },
+    ]);
   const ref = (design: Artifact): ArtifactRef => ({
     id: design.id,
     version: design.version,
@@ -560,8 +603,8 @@ export function ArtifactSheet({
                 </Text>
               )}
               {source && !isHtml && designs && designs.length > 1 && index >= 0 && (
-                <Text style={{ color: colors.ink3, fontSize: 11 }}>
-                  Design {index + 1} of {designs.length}
+                <Text numberOfLines={1} style={{ color: colors.ink3, fontSize: 11 }}>
+                  {designs[index].group ? `${designs[index].group} · ` : ""}Design {index + 1} of {designs.length}
                 </Text>
               )}
               {source && sharingAvailable === sharingScope && (isHtml ? !!artifact : designs && designs.length > 0 && feature.enabled === true) && (
@@ -590,6 +633,9 @@ export function ArtifactSheet({
                 onPress={designs && index >= 0 && index < designs.length - 1 ? () => step(1) : undefined}
               />
             )}
+            {source && !isHtml && artifact?.format === "design" && (
+              <CircleButton label={`Delete ${artifact.title}`} icon={Delete02Icon} onPress={() => remove(artifact)} />
+            )}
             <CircleButton label={isHtml ? "Close artifact" : "Close designs"} icon={Cancel01Icon} onPress={() => router.back()} />
           </View>
           <View style={{ flex: 1 }}>
@@ -612,7 +658,11 @@ export function ArtifactSheet({
                 <PillButton title="Retry" onPress={() => setRevision((value) => value + 1)} />
               </View>
             ) : artifact ? (
-              <ArtifactWebView key={`${artifact.id}:${artifact.version}`} html={artifact.html} />
+              <ArtifactWebView
+                key={`${artifact.id}:${artifact.version}`}
+                html={artifact.html}
+                canvas={artifact.format === "design" ? artifact.document : undefined}
+              />
             ) : (
               <Text style={[styles.muted, { padding: 20 }]}>Loading page...</Text>
             )}
@@ -740,29 +790,35 @@ export function ArtifactSheet({
 }
 
 /**
- * The design inside artifactShell, from a cache file of its own. The page has no script; the design runs in its
+ * The page inside artifactShell, from a cache file of its own. The page has no script; the page's own runs in its
  * sandboxed frame with an opaque origin, so it can't read the phone's files (this web view grants a file: page read
- * access to all of them), make requests, or navigate the page or its own frame away. The Expo modules bridge stays
- * off, and nothing the page posts is read.
+ * access to all of them), make requests, or navigate the page or its own frame away. A design (`canvas`, its size)
+ * goes on designCanvasShell's canvas instead, to pan and zoom: the page runs only that fixed script, and the design's
+ * frame runs none. The Expo modules bridge stays off, and nothing the page posts is read.
  */
-function ArtifactWebView({ html }: { html: string }) {
+function ArtifactWebView({ html, canvas }: { html: string; canvas?: { width: number; height: number } }) {
   const { colors } = useTheme();
   const [crashed, setCrashed] = useState(false);
   // Written while rendering, so the page is there on the first frame; each design gets a file of its own, removed
   // when the design changes or goes.
   // Named for this view and the design's content: two views never share a file, and a changed design gets a new one.
   const id = useId().replace(/[^a-zA-Z0-9]/g, "");
+  // The size, not the document: a fresh read of the same version is a new object, and preparing again would write the
+  // same file name and then delete it with the previous preparation's cleanup.
+  const width = canvas?.width;
+  const height = canvas?.height;
   const prepared = useMemo(() => {
+    const page = width && height ? designCanvasShell(html, { width, height }, colors.canvas) : artifactShell(html);
     let hash = 5381;
-    for (let index = 0; index < html.length; index++) hash = (hash * 33) ^ html.charCodeAt(index);
+    for (let index = 0; index < page.length; index++) hash = (hash * 33) ^ page.charCodeAt(index);
     const file = new File(Paths.cache, `artifact-${id}-${(hash >>> 0).toString(36)}.html`);
     try {
-      file.write(artifactShell(html));
+      file.write(page);
       return { file, uri: file.uri };
     } catch {
       return null;
     }
-  }, [html, id]);
+  }, [html, id, width, height, colors.canvas]);
   useEffect(
     () => () => {
       try {
@@ -785,7 +841,8 @@ function ArtifactWebView({ html }: { html: string }) {
   return (
     <DomWebView
       source={{ uri }}
-      style={{ flex: 1, backgroundColor: "#ffffff" }}
+      // A design sits on the canvas color, so the view shows it, not white, until the page paints.
+      style={{ flex: 1, backgroundColor: canvas ? colors.canvas : "#ffffff" }}
       containerStyle={{ flex: 1 }}
       useExpoModulesBridge={false}
       allowsInlineMediaPlayback

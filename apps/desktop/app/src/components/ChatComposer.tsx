@@ -9,13 +9,14 @@ import { AnswerCard } from "./agents/AnswerCard";
 import { PullRequestActionCard } from "./agents/PullRequestActionCard";
 import { LinearIssueCard } from "./agents/LinearIssueCard";
 import { UsageLimitCard } from "./agents/UsageLimitCard";
-import { usageLimitOf } from "@milagre/shared/usage-limit";
+import { isAccountSwitch, usageLimitOf } from "@milagre/shared/usage-limit";
 import { isPullRequestAction } from "@milagre/shared/pr-action";
 import { isLinearIssueContext } from "@milagre/shared/linear-issue";
 import { parseDesignFeedback } from "@milagre/shared/artifact";
 import { SubagentCanvas } from "./agents/SubagentCanvas";
+import { useSubagentDesigns } from "./agents/subagent-designs";
 import { useEvent } from "../lib/stable";
-import type { AgentPort, AgentTask, ContextUsage, Subagent } from "../model";
+import type { AgentPort, ChatPlan, ContextUsage, Subagent } from "../model";
 import { PortTrack } from "./agents/PortTrack";
 import { TaskTrack } from "./agents/TaskTrack";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -43,9 +44,14 @@ import { PromptComposer } from "./PromptComposer";
 import { PickerPanel, PickerRow } from "./primitives/Picker";
 import { LinearIssuePicker } from "./LinearIssuePicker";
 import Tooltip from "./primitives/Tooltip";
+import { PillSlot, StatusPill } from "./primitives/StatusPill";
+import { AnimatePresence, LayoutGroup } from "motion/react";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { HandoffDivider } from "./Handover";
 import { WorktreeLinkDivider } from "./WorktreeLinkDivider";
+import { AccountSwitchDivider } from "./AccountSwitchDivider";
+import { ChatReloadDivider } from "./ChatReloadDivider";
+import { isChatReload } from "@milagre/shared/chat-reload";
 import { CompactionDivider } from "./CompactionDivider";
 import { advisorResultLabel, messageSender } from "@milagre/shared/advisor-result";
 import { LinkedMessageHeader, linkedContext } from "./LinkedMessage";
@@ -169,6 +175,8 @@ const MessageSection = memo(function MessageSection({
   if (isHandoff(message)) return <HandoffDivider context={message.context} models={models} />;
   if (isWorktreeLinked(message)) return <WorktreeLinkDivider context={message.context} />;
   if (isCompaction(message)) return <CompactionDivider context={message.context} />;
+  if (isAccountSwitch(message)) return <AccountSwitchDivider context={message.context} />;
+  if (isChatReload(message)) return <ChatReloadDivider />;
   const linked = linkedContext(message);
   const advisor = typeof message.context === "object" && message.context?.kind === "advisor-result" ? message.context : null;
   // A PR-blocker pill's message shows as a card, not as the skill prompt the agent read.
@@ -488,8 +496,8 @@ interface ChatComposerProps {
   onStopAdvisor?: (id: string) => void;
   onRetryAdvisor?: (id: string) => void;
   waitingForSubagents?: boolean;
-  /** The running turn's to-do list, shown as a pill beside the subagents. */
-  tasks?: AgentTask[];
+  /** The Chat's plan (tasks and phases), shown as a pill beside the subagents. */
+  plan?: ChatPlan;
   /** How full the agent's context window is, shown as a ring beside Send. */
   contextUsage?: ContextUsage;
   /** The ports the chat's commands listen on, shown as a pill beside the to-do list. */
@@ -782,7 +790,7 @@ export function ChatComposer({
   onStopAdvisor,
   onRetryAdvisor,
   waitingForSubagents = false,
-  tasks,
+  plan,
   contextUsage,
   ports,
   agentChatId,
@@ -840,7 +848,7 @@ export function ChatComposer({
   const retryAdvisor = useEvent((id: string) => onRetryAdvisor?.(id));
   const closeCanvas = useCallback(() => {
     setCanvasChat(null);
-    requestAnimationFrame(() => root.current?.querySelector<HTMLButtonElement>("[data-slot=subagent-track] > button")?.focus());
+    requestAnimationFrame(() => root.current?.querySelector<HTMLButtonElement>("[data-slot=subagent-track] [data-face=pill] button")?.focus());
   }, []);
   // A first message, including its preview while setup runs, opens the conversation layout.
   const isNewChat = messages.length === 0;
@@ -852,10 +860,20 @@ export function ChatComposer({
 
   // The runtime knows a Chat by its Project's path, not the Worktree's `projectPath` it runs in.
   const runtimeChat = typeof chatId === "number" && chatId > 0 && projectPath ? (agentChatId ?? `${messageScope ?? projectPath}#${chatId}`) : null;
-  // Designs are read through the Chat's key, which a new Chat and a shared Link Chat don't have here.
-  const artifactChat = scopeKind !== "link" ? runtimeChat : null;
+  // Designs are read through the Chat's key; a shared Link Chat uses its Link-scoped key too.
+  const artifactChat = runtimeChat;
   const artifactSteps = useMemo(() => [...messages.flatMap((message) => message.steps ?? []), ...(streamingSteps ?? [])], [messages, streamingSteps]);
+  const subagentDesignWork = useSubagentDesigns(artifactSteps);
   const userMessages = useMemo(() => messages.filter((message) => message.role === "user").map(({ id, body }) => ({ id, body })), [messages]);
+  // What the user typed in this chat, oldest first, for Up/Down in the prompt. Host-sent context (delegations, reports) is left out.
+  const promptHistory = useMemo(
+    () =>
+      messages
+        .filter((message) => message.role === "user" && !message.context && message.body.trim())
+        .map((message) => message.body)
+        .filter((body, index, bodies) => body !== bodies[index - 1]),
+    [messages],
+  );
 
   function handleFileDrop(event: DragEvent<HTMLDivElement>) {
     const files = Array.from(event.dataTransfer.files);
@@ -866,7 +884,15 @@ export function ChatComposer({
   }
 
   return (
-    <ReplyProviders chatId={artifactChat} steps={artifactSteps} userMessages={userMessages} onSend={onSendDesignMessage}>
+    <ReplyProviders
+      chatId={artifactChat}
+      steps={artifactSteps}
+      userMessages={userMessages}
+      onSend={onSendDesignMessage}
+      agent={providerName(sessionProvider ?? selectedModel.provider)}
+      followAgent
+      subagents={subagents}
+    >
       <div
         ref={root}
         className={`relative flex h-full min-h-0 w-full flex-col overflow-visible bg-transparent ${isNewChat ? "justify-center" : ""}`}
@@ -889,6 +915,7 @@ export function ChatComposer({
           onClose={closeCanvas}
           onStop={onStopAdvisor ? stopAdvisor : undefined}
           onRetry={onRetryAdvisor ? retryAdvisor : undefined}
+          designs={subagentDesignWork}
         />
         <div className={canvasOpened ? "hidden" : "contents"} aria-hidden={canvasOpened || undefined}>
           {/* Messages scrolled past the top soften into a progressive blur under the window-drag strip. The layers fade,
@@ -974,42 +1001,41 @@ export function ChatComposer({
             </div>
           )}
           <div
-            className={`mx-auto flex w-full max-w-3xl shrink-0 items-center justify-end gap-2 px-3 empty:hidden ${isNewChat ? "mb-2" : "pointer-events-none relative z-20 -mt-[38px] mb-3.5 [&>*]:pointer-events-auto"}`}
+            className={`mx-auto flex w-full max-w-3xl shrink-0 items-center justify-end gap-2 px-3 empty:hidden ${isNewChat ? "mb-2" : "pointer-events-none relative z-20 -mt-[38px] mb-3.5 has-[[data-expanded]]:z-[70] [&>*]:pointer-events-auto"}`}
           >
             {/* The PR fix sits at the left of the composer's chip row; the chat's ports, to-dos and subagents at the right.
-            Its tint is translucent, so a surface backing keeps the messages under the row from showing through. */}
-            {!isNewChat && pullRequestAction && (
-              <span className="mr-auto rounded-full bg-surface">
-                <button
-                  type="button"
-                  onClick={pullRequestAction.onRun}
-                  disabled={sendBlocked || isSending || imageDraft.loading}
-                  className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[12px] font-medium transition-colors focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-50 ${
-                    pullRequestAction.tone === "orange"
-                      ? "border-orange/20 bg-orange/5 text-orange hover:bg-orange/10 focus-visible:outline-orange"
-                      : "border-red/20 bg-red/5 text-red hover:bg-red/10 focus-visible:outline-red"
-                  }`}
-                >
-                  <Icon icon={GitPullRequestIcon} size={14} />
-                  {pullRequestAction.label}
-                </button>
-              </span>
-            )}
-            <PortTrack key={`ports-${messages[0]?.session_id ?? "new"}`} ports={ports} onStop={onStopPort} />
-            <TaskTrack key={`tasks-${messages[0]?.session_id ?? "new"}`} tasks={tasks} />
-            <BrowserTrack key={`browser-${agentChatId ?? chatId}`} chatId={agentChatId} />
-            {!isNewChat && runtimeChat && <SimulatorTrack key={`simulator-${runtimeChat}`} chatId={runtimeChat} />}
-            <SubagentTrack
-              key={chatId}
-              chatKey={runtimeChat}
-              agents={subagents}
-              provider={sessionProvider ?? selectedModel.provider}
-              onOpenCanvas={() => setCanvasChat(chatId)}
-              onArchiveFinished={onArchiveFinishedSubagents}
-              onArchive={onArchiveSubagent}
-              onStop={onStopAdvisor}
-              onRetry={onRetryAdvisor}
-            />
+            Each pill is frosted glass; the LayoutGroup slides the others over when one comes or goes. */}
+            <LayoutGroup>
+              <AnimatePresence initial={false}>
+                {!isNewChat && pullRequestAction && (
+                  <PillSlot key="pr-action" slot="pr-action" className="mr-auto flex">
+                    <StatusPill
+                      onClick={pullRequestAction.onRun}
+                      disabled={sendBlocked || isSending || imageDraft.loading}
+                      icon={GitPullRequestIcon}
+                      label={pullRequestAction.label}
+                      tone={pullRequestAction.tone === "orange" ? "orange" : "red"}
+                      className="font-medium"
+                    />
+                  </PillSlot>
+                )}
+              </AnimatePresence>
+              <PortTrack key={`ports-${messages[0]?.session_id ?? "new"}`} ports={ports} onStop={onStopPort} />
+              <TaskTrack key={`tasks-${messages[0]?.session_id ?? "new"}`} plan={plan} />
+              <BrowserTrack key={`browser-${agentChatId ?? chatId}`} chatId={agentChatId} />
+              {!isNewChat && runtimeChat && <SimulatorTrack key={`simulator-${runtimeChat}`} chatId={runtimeChat} />}
+              <SubagentTrack
+                key={chatId}
+                chatKey={runtimeChat}
+                agents={subagents}
+                provider={sessionProvider ?? selectedModel.provider}
+                onOpenCanvas={() => setCanvasChat(chatId)}
+                onArchiveFinished={onArchiveFinishedSubagents}
+                onArchive={onArchiveSubagent}
+                onStop={onStopAdvisor}
+                onRetry={onRetryAdvisor}
+              />
+            </LayoutGroup>
           </div>
 
           <div className={`relative mx-auto w-full max-w-3xl shrink-0 p-1.5 ${isNewChat ? "" : "z-20 -mt-1.5"}`}>
@@ -1038,6 +1064,7 @@ export function ChatComposer({
                 projectPath={projectPath}
                 draft={draft}
                 onDraftChange={onDraftChange}
+                history={promptHistory}
                 onSend={onSend}
                 onStop={onStop}
                 onCompact={onCompact}
@@ -1075,22 +1102,83 @@ export function ChatComposer({
   );
 }
 
+const NO_OP = () => {};
+
+/** A Chat's transcript alone, following its stream: an unfocused tile of the Chat grid. Replying means focusing the tile. */
+export function ChatTranscript({
+  chatKey,
+  messages,
+  messageScope,
+  earlier,
+  isSending,
+  streamingText,
+  streamingSteps,
+  asking,
+  waitingStepIds,
+  runStartedAt,
+  models,
+}: { chatKey: string } & Pick<
+  ChatComposerProps,
+  "messages" | "messageScope" | "earlier" | "isSending" | "streamingText" | "streamingSteps" | "asking" | "waitingStepIds" | "runStartedAt" | "models"
+>) {
+  const steps = useMemo(() => [...messages.flatMap((message) => message.steps ?? []), ...(streamingSteps ?? [])], [messages, streamingSteps]);
+  const userMessages = useMemo(() => messages.filter((message) => message.role === "user").map(({ id, body }) => ({ id, body })), [messages]);
+  return (
+    <ReplyProviders chatId={chatKey} steps={steps} userMessages={userMessages}>
+      <MessageScroller
+        navigation="none"
+        followOutput
+        busy={isSending}
+        className="min-h-0 flex-1"
+        viewportClassName="pt-2 pb-3"
+        contentClassName="min-h-full"
+        autoScrollKey={`${messages.length}-${isSending}-${streamingSteps?.length ?? 0}`}
+      >
+        <div className="flex min-h-full w-full flex-col gap-3 px-3">
+          <StepDetailsScope scope={messageScope}>
+            <MessageTranscript
+              earlier={earlier}
+              messages={messages}
+              isSending={isSending}
+              streamingText={streamingText}
+              streamingSteps={streamingSteps}
+              asking={asking}
+              waitingStepIds={waitingStepIds}
+              onRecommendationSelect={NO_OP}
+              cliStatus={null}
+              models={models}
+            />
+          </StepDetailsScope>
+          {isSending && <ThinkingIndicator startedAt={runStartedAt} label="Working" />}
+        </div>
+      </MessageScroller>
+    </ReplyProviders>
+  );
+}
+
 /** The contexts a Chat's replies read: its designs and the send function a generative UI button posts through. */
 function ReplyProviders({
   chatId,
   steps,
   userMessages,
   onSend,
+  agent,
+  followAgent,
+  subagents,
   children,
 }: {
   chatId: string | null;
   steps: ChatStep[];
   userMessages: { id: number | string; body: string }[];
   onSend?: (text: string) => Promise<boolean>;
+  agent?: string;
+  /** The Chat this window shows, whose Designs open as the agent starts designing (not a grid tile). */
+  followAgent?: boolean;
+  subagents?: readonly Subagent[];
   children: ReactNode;
 }) {
   return (
-    <ArtifactsProvider chatId={chatId} steps={steps} userMessages={userMessages} onSend={onSend}>
+    <ArtifactsProvider chatId={chatId} steps={steps} userMessages={userMessages} onSend={onSend} agent={agent} followAgent={followAgent} subagents={subagents}>
       <GenerativeUIProvider onSend={onSend}>{children}</GenerativeUIProvider>
     </ArtifactsProvider>
   );

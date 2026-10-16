@@ -49,6 +49,7 @@ test("text uses supplied line breaks, native tspans, alignment and escaped XML",
       width: 200,
       height: 100,
       text: "unused",
+      fontFamily: "Arial, sans-serif",
       fontSize: 20,
       fontWeight: 700,
       textAlign: "center",
@@ -175,4 +176,45 @@ test("XML output replaces invalid control characters without dropping Unicode te
 
 test("an empty design is still a standalone document with a background", () => {
   assert.match(render(screen([])), /<rect x="0" y="0" width="390" height="844" fill="#ffffff"\/><\/svg>$/);
+});
+
+test("an image with a source paints no placeholder shape; one without keeps it", () => {
+  const document = screen([
+    { id: "icon", type: "image", x: 0, y: 0, width: 24, height: 24, src: "data:image/png;base64,iVBORw0KGgo=" },
+    { id: "empty", type: "image", x: 0, y: 40, width: 24, height: 24 },
+    { id: "tinted", type: "image", x: 0, y: 80, width: 24, height: 24, src: "data:image/png;base64,iVBORw0KGgo=", fill: "#ff0000" },
+  ]);
+  const svg = render(document);
+  const layer = (id) => new RegExp(`<g id="layer-${id}"[\\s\\S]*?</g>`).exec(svg)[0];
+  assert.doesNotMatch(layer("icon"), /<rect[^>]*fill=/);
+  assert.match(layer("icon"), /<image /);
+  assert.match(layer("empty"), /<rect[^>]*fill="#d8ded8"/);
+  assert.match(layer("tinted"), /<rect[^>]*fill="#ff0000"/);
+});
+
+test("Inter text names the measured face it draws with; other families keep the requested weight", () => {
+  const svg = render(
+    screen([
+      { id: "inter", type: "text", x: 0, y: 0, width: 200, height: 40, text: "Inter", fontWeight: 650 },
+      { id: "light", type: "text", x: 0, y: 40, width: 200, height: 40, text: "Light", fontFamily: "Inter, sans-serif", fontWeight: 450 },
+      { id: "arial", type: "text", x: 0, y: 80, width: 200, height: 40, text: "Arial", fontFamily: "Arial", fontWeight: 650 },
+    ]),
+  );
+  assert.deepEqual(
+    [...svg.matchAll(/font-weight="(\d+)"/g)].map((match) => match[1]),
+    ["600", "400", "650"],
+  );
+});
+
+test("onCanvasOnly leaves out layers wholly outside the screen and keeps partly visible ones", () => {
+  const document = screen([
+    { id: "partly", type: "rectangle", x: 370, y: 10, width: 40, height: 8, fill: "red" },
+    { id: "right", type: "rectangle", x: 390, y: 10, width: 40, height: 8, fill: "red" },
+    { id: "left", type: "rectangle", x: -40, y: 10, width: 40, height: 8, fill: "red" },
+    { id: "below", type: "rectangle", x: 10, y: 844, width: 40, height: 8, fill: "red" },
+    { id: "above", type: "icon", icon: "x", x: 10, y: -24, width: 24, height: 24 },
+  ]);
+  const ids = (svg) => [...svg.matchAll(/id="layer-([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(ids(render(document)), ["partly", "right", "left", "below", "above"]);
+  assert.deepEqual(ids(renderDesignSvg(document, literalBounds(document.nodes), lines, color, "", { onCanvasOnly: true })), ["partly"]);
 });

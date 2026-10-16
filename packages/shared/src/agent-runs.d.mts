@@ -1,12 +1,12 @@
 import type {
   AgentEvent,
   AnsweredQuestion,
-  AgentTask,
   ChatStep,
   ContextUsage,
   CoordinatorState,
   TranscriptState,
   PermissionDecision,
+  PermissionMode,
   PermissionRequest,
   QuestionAnswers,
   QuestionRequest,
@@ -20,6 +20,8 @@ export type SentAnswer = PermissionDecision | "answered" | "dismissed";
 export interface AgentRun {
   text: string;
   model: string;
+  /** The permission mode the turn started in; a Chat started for another Chat (MCP, Delegation) has no saved pick of its own. */
+  permissionMode?: PermissionMode;
   /** When this turn began, in milliseconds since epoch. Older hosts may omit it. */
   startedAt?: number;
   /** Tool steps in the order they started; each one's offset is where it sits in `text`. */
@@ -34,8 +36,6 @@ export interface AgentRun {
   split?: boolean;
   /** The agent waits on its subagents, so the indicator says so instead of "Working". */
   waitingForSubagents?: boolean;
-  /** The agent's to-do list as it last reported it; gone with the run when the turn ends. */
-  tasks?: AgentTask[];
   /** How full the agent's context window is; saved on the chat when the turn ends. */
   contextUsage?: ContextUsage;
 }
@@ -52,7 +52,7 @@ export { LOCAL_COMPUTER, computerOfKey, qualifyKey, unqualifyKey } from "./chat-
 export function sessionIdFromKey(key: string): number;
 export function projectOfKey(key: string): string;
 export function chatInProject(projectPath: string, key: string): boolean;
-export function startRun(runs: AgentRuns, chatId: string, model: string): AgentRuns;
+export function startRun(runs: AgentRuns, chatId: string, model: string, permissionMode?: PermissionMode): AgentRuns;
 export function isTurnEnd(event: AgentEvent): boolean;
 export function subagentActive(agent: Pick<Subagent, "status"> | undefined): boolean;
 export function runStatus(run: AgentRun | undefined): "idle" | "working" | "waiting";

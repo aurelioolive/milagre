@@ -5,6 +5,8 @@
 //   command          a command runs (pending -> in_progress -> completed with output), then text
 //   failing-command  a command that exits 2
 //   permission       a command asks first; the reply text names the option picked ("cancelled" if none)
+//   mcp-plan-tool    a Milagre plan tool call asks first; the reply text names the option picked
+//   mcp-design-tool  as mcp-plan-tool, for a Milagre tool that still needs the user's say
 //   edit             an edit asks with its diff, runs as another call, and the asking call fails "never executed"
 //   question         an interaction_ request (a question); the reply text names the option picked
 //   plan             a plan with three entries
@@ -18,6 +20,7 @@
 //   prompt-login     session/prompt fails with -32000
 //   subscription     session/new fails with SUBSCRIPTION_REQUIRED
 //   reject-mcp       session/new and session/resume refuse a non-empty mcpServers
+//   reject-extra-mcp session/new and session/resume refuse an mcpServers list with a server other than milagre
 //   no-resume        no session/resume capability: session/load replays history first
 //   sign-in-line     prints the sign-in URL on stdout and stderr at startup
 // A session id "missing" can't be resumed or loaded. fake/received returns every message received.
@@ -128,6 +131,22 @@ async function runPrompt(id, sessionId) {
       text(sessionId, `picked:${picked(result)}`);
       return end();
     }
+    case "mcp-plan-tool":
+    case "mcp-design-tool": {
+      const tool = scenario === "mcp-plan-tool" ? "tasks_set" : "design_show";
+      const call = {
+        toolCallId: "mcp-1",
+        kind: "other",
+        status: "pending",
+        title: `milagre_${tool}`,
+        rawInput: { arguments: { id: "x" } },
+        _meta: { mcp: { tool, server: "milagre" }, is_mcp_tool_call: true },
+      };
+      update(sessionId, { sessionUpdate: "tool_call", ...call });
+      const result = await ask({ sessionId, toolCall: call, options: OPTIONS });
+      text(sessionId, `picked:${picked(result)}`);
+      return end();
+    }
     case "edit": {
       const diff = { type: "diff", path: `${process.cwd()}/notes.txt`, oldText: "a\nb\n", newText: "a\nc\n", _meta: { kind: "modify" } };
       const call = { toolCallId: "ask-1", title: "Run create_file?", kind: "edit", status: "pending", content: [diff], locations: [{ path: diff.path }] };
@@ -224,7 +243,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     return;
   }
-  const mcpRefused = scenario === "reject-mcp" && params.mcpServers?.length;
+  const mcpRefused =
+    (scenario === "reject-mcp" && params.mcpServers?.length) ||
+    (scenario === "reject-extra-mcp" && params.mcpServers?.some((server) => server.name !== "milagre"));
   switch (method) {
     case "initialize":
       return send({

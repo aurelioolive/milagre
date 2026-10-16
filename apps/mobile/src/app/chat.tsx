@@ -1,7 +1,7 @@
 import { GenerativeUIProvider } from "../genui/GenerativeUI";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type Reanimated from "react-native-reanimated";
-import { Alert, Image, Keyboard, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Image, Keyboard, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { LiquidGlassView } from "@sbaiahmed1/react-native-blur";
 import { UltracodeGlow } from "../ultracode-glow";
 import { Redirect, Stack, router, useFocusEffect, useLocalSearchParams, useNavigation } from "expo-router";
@@ -20,20 +20,21 @@ import {
 } from "@hugeicons/core-free-icons";
 import { sessionForWorktree } from "@milagre/shared/model";
 import type { ChatMessage, LinkIssueResult, PullRequestActionContext } from "@milagre/shared/model";
-import { chatTitle, createPendingChat, pendingChatSessionId } from "@milagre/shared/chats";
+import { chatPullRequests, chatTitle, createPendingChat, pendingChatSessionId, pullRequestRefs } from "@milagre/shared/chats";
 import { messageSender } from "@milagre/shared/advisor-result";
 import { messageNavigationIndices } from "@milagre/shared/message-navigation";
 import { LINK_PR_HINT, issueChipLabel, issueFirstMessage, type LinearIssue, type LinearIssuesResult } from "@milagre/shared/linear";
 import { worktreeShared } from "@milagre/shared/archive";
 import type { Client, OpenProject } from "../client";
 import { answeredQuestions, lastUserModel, projectOfKey, sessionIdFromKey } from "@milagre/shared/agent-runs";
-import { pullRequestBlockers } from "@milagre/shared/pr-blockers";
+import { pullRequestAction, pullRequestBlockers, rowPullRequests } from "@milagre/shared/pr-blockers";
 import { pullRequestActionBody, pullRequestActionContext, pullRequestActionPrompt } from "@milagre/shared/pr-action";
 import { linearIssueContext, linearIssueRequest } from "@milagre/shared/linear-issue";
 import { useComposer, usePendingChats, useSession } from "../session";
 import { pickAttachments, preparePastedImage, discardPastedImage, type PastedImage } from "../attachment-picker";
 import { appendAttachments, attachmentPrompt, prepareAttachments } from "../attachments";
-import { PullRequestAction, SubagentChip, usePullRequest } from "../status-indicators";
+import { PullRequestAction, SubagentChip } from "../status-indicators";
+import { useChatPullRequests } from "../use-chat-pull-requests";
 import { SimulatorChip } from "../simulator";
 import { BrowserChip } from "../browser";
 import { PortsChip } from "../ports";
@@ -46,16 +47,20 @@ import { handoffSides } from "../handoff-sides";
 import { HandoffDivider } from "../handoff-divider";
 import { showBrief } from "../handoff-brief-store";
 import { WorktreeLinkDivider } from "../worktree-link-divider";
+import { AccountSwitchDivider } from "../account-switch-divider";
+import { ChatReloadDivider } from "../chat-reload-divider";
+import { isChatReload, RELOAD_TEXT } from "@milagre/shared/chat-reload";
 import { CompactionDivider } from "../compaction-divider";
 import { isHandoff } from "@milagre/shared/handoff";
 import { COMPACT_COMMAND, compactionText, isCompaction } from "@milagre/shared/compaction";
+import { accountSwitchText, isAccountSwitch } from "@milagre/shared/usage-limit";
 import { isWorktreeLinked, worktreeLinkText } from "@milagre/shared/worktree-link";
 import { ThinkingIndicator } from "../running-logo";
 import { BottomFade, EdgeFade } from "../bottom-fade";
 import { useDotBackground } from "../dot-background";
 import { Approval, ActivityQuestions } from "../questions";
 import { AgentControls, PermissionChip } from "../agent-controls";
-import { afterSend, modelsFor, selectedModel, sendOptions, turnTarget } from "../turn-options";
+import { afterSend, chatPreferences, modelsFor, selectedModel, sendOptions, turnTarget } from "../turn-options";
 // Linear's mark as a template image, so iOS tints it like the SF Symbols beside it in menus.
 import LINEAR_MARK from "../../assets/linear-mark.png";
 import { Icon, LinearLogo } from "../icons";
@@ -65,6 +70,7 @@ import { useOpenProject } from "../use-open-project";
 import { ErrorNotice, GlassIconButton, IconButton, PageScroll, PillButton, PullDown, useStyles } from "../ui";
 import { PromptField } from "../prompt-field";
 import { ContextRing } from "../context-ring";
+import { PlanPanel, PlanPill, usePlanPanel } from "../plan-pill";
 import { useTheme } from "../theme";
 import { archiveFromPhone, showArchiveNotice } from "../archive";
 import { confirmSheet } from "../confirm-store";
@@ -208,7 +214,6 @@ export default function ChatScreen() {
     session.snapshot?.project.state.worktrees[
       (params.id ? session.snapshot.project.state.sessions[Number(params.id)]?.worktree_id : Number(params.worktreeId)) ?? -1
     ];
-  const pr = usePullRequest(session.snapshot?.project.link ? undefined : worktreeOf);
   // Stable props keep each memoized ChatReply from re-rendering on every keystroke and poll tick.
   const connected = session.client;
   const projectPath = session.snapshot?.project.path;
@@ -290,6 +295,16 @@ export default function ChatScreen() {
   const [transcript, setTranscript] = useState({ key: scrollKey, messages: loadedMessages });
   const messages = lean && historyPage.loading && !loadedMessages.length && transcript.key === scrollKey ? transcript.messages : loadedMessages;
   if (transcript.key !== scrollKey || transcript.messages !== messages) setTranscript({ key: scrollKey, messages });
+  // The open Chat's PRs, read as its row in the Chat list reads them (same refs, same pooled lookups), so the PR action
+  // above the composer and the row's status are about the same PRs.
+  const prPath = session.snapshot?.project.link ? undefined : worktreeOf?.path;
+  const openChat = params.id ? session.snapshot?.project.state.sessions[Number(params.id)] : undefined;
+  const savedPrRefs = openChat ? (openChat.summary?.pullRequests ?? session.snapshot?.project.pullRequestRefs?.[openChat.id]) : undefined;
+  const prRefs = useMemo(() => (openChat ? (savedPrRefs ?? pullRequestRefs(messages)) : []), [openChat, savedPrRefs, messages]);
+  const prStatus = useChatPullRequests(session.client, prPath ? [{ path: prPath, refs: prRefs }] : []);
+  const chatPrs = prPath ? chatPullRequests(prRefs, prStatus[prPath]?.found ?? {}, prStatus[prPath]?.branch) : [];
+  // The header menu's PR is the one the row shows first.
+  const pr = rowPullRequests(chatPrs)[0] ?? null;
   const remote = lean && (!pending || pendingCanonicalId !== null) ? Math.max(0, historyPage.total - historyPage.messages.length) : 0;
   // The design the user last chose on the design sheet, which its cards mark.
   const chosen = useMemo(() => chosenDesign(messages.filter((message) => message.role === "user").map((message) => message.body)), [messages]);
@@ -330,7 +345,11 @@ export default function ChatScreen() {
             ? `Go to ${worktreeLinkText(messages[index].context)}, ${index + 1} of ${messages.length}.`
             : isCompaction(messages[index])
               ? `Go to ${compactionText(messages[index].context)}, ${index + 1} of ${messages.length}.`
-              : `Go to ${messageSender(messages[index])} message ${index + 1} of ${messages.length}. ${messages[index].body.slice(0, 88)}`,
+              : isAccountSwitch(messages[index])
+                ? `Go to ${accountSwitchText(messages[index].context)}, ${index + 1} of ${messages.length}.`
+                : isChatReload(messages[index])
+                  ? `Go to ${RELOAD_TEXT}, ${index + 1} of ${messages.length}.`
+                  : `Go to ${messageSender(messages[index])} message ${index + 1} of ${messages.length}. ${messages[index].body.slice(0, 88)}`,
       })),
     [messages, handoffModels],
   );
@@ -452,6 +471,11 @@ export default function ChatScreen() {
     // The counters are the trigger; the rest is read as it stands when one moves.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [compactRequests]);
+  // The Tasks pill grows into its panel over the transcript; the panel is drawn at the screen's root, above the composer.
+  const planPanel = usePlanPanel(
+    params.id ? session.snapshot?.project?.state.sessions[Number(params.id)]?.plan : undefined,
+    `${session.snapshot?.project?.path}#${params.id}`,
+  );
   if (!session.client || (!session.snapshot && !wanted)) return <Redirect href="/" />;
   if (!session.snapshot || !targetMatches || needsWorktree) {
     return (
@@ -485,7 +509,7 @@ export default function ChatScreen() {
     messages.filter((message) => message.role === "user").map((message) => message.body),
   );
   const contextUsage = run?.contextUsage ?? chat?.contextUsage;
-  const preferences = composer.preferences[chatId] || composer.defaults;
+  const preferences = chatPreferences(composer.preferences[chatId], composer.defaults, run?.permissionMode);
   const turn = turnTarget(composer.preferences[chatId], chat?.provider, composer.defaults);
   const actualProvider = turn.provider;
   const model = selectedModel(actualProvider, turn.model || (chat && !turn.picked ? lastUserModel(project.state, chat.id) : ""), session.models);
@@ -810,6 +834,8 @@ export default function ChatScreen() {
         "plain-text",
         title,
       );
+    else if (id === "reload" && chat)
+      void action(() => client.call("chat:reload", [chatId]), true).then((done) => done && showToast("Chat reloaded. Your next message starts a fresh agent."));
     else if (id === "archive" && chat?.archived) void action(() => client.call("chat:patch", [project.path, chat.id, { archived: false }]));
     else if (id === "archive" && chat) void archive(chat);
   }
@@ -865,8 +891,9 @@ export default function ChatScreen() {
     }
   }
   const blockers = pullRequestBlockers(pr);
+  const prAction = pullRequestAction(chatPrs);
   // The pill's action, checked here too: a PR without a number yet shows no pill instead of sending a broken one.
-  const prActionRequest = pr && blockers[0] ? pullRequestActionContext({ action: blockers[0], pr: pr.number, url: pr.url }) : null;
+  const prActionRequest = prAction ? pullRequestActionContext({ action: prAction.blocker, pr: prAction.pr.number, url: prAction.pr.url }) : null;
   const agents = (chat?.subagents || []).filter((agent) => !agent.archived);
   const diff = worktree?.diff;
   const linearIssue: LinearIssue | undefined = worktree ? linearIssues[worktree.path] : undefined;
@@ -976,6 +1003,9 @@ export default function ChatScreen() {
             <Stack.Toolbar.MenuAction icon="pencil" onPress={() => headerAction("rename")}>
               Rename
             </Stack.Toolbar.MenuAction>
+            <Stack.Toolbar.MenuAction icon="arrow.clockwise" disabled={busy} onPress={() => headerAction("reload")}>
+              Reload chat
+            </Stack.Toolbar.MenuAction>
             {canLink &&
               (storedIssue ? (
                 <Stack.Toolbar.MenuAction icon={LINEAR_MARK} iconRenderingMode="template" disabled={busy} onPress={() => void unlinkWorktreeIssue()}>
@@ -1020,7 +1050,7 @@ export default function ChatScreen() {
         <Stack.Screen options={{ title, headerTitle: () => header, headerBackVisible: false, gestureEnabled: false }} />
         {sidebar}
         {more}
-        <PanelSwipe panels={panels}>
+        <PanelSwipe panels={panels} covered={planPanel.phase !== "closed"}>
           {/* The header clearance is in paddingTop; an automatic iOS inset would add it a second time. */}
           <KeyboardChatScrollView
             key={scrollKey}
@@ -1133,6 +1163,10 @@ export default function ChatScreen() {
                   <WorktreeLinkDivider context={message.context} client={session.client} onOpen={(title, text) => openBrief(text, title)} />
                 ) : isCompaction(message) ? (
                   <CompactionDivider context={message.context} />
+                ) : isAccountSwitch(message) ? (
+                  <AccountSwitchDivider context={message.context} />
+                ) : isChatReload(message) ? (
+                  <ChatReloadDivider />
                 ) : (
                   <ChatReply
                     message={message}
@@ -1185,11 +1219,6 @@ export default function ChatScreen() {
           ) : null}
           <MessageNavigation items={navigationItems} onSelect={navigateToMessage} top={insets.top + 72} bottom={dockHeight + 12} keyboardOffset={lift} />
           <KeyboardStickyView pointerEvents="box-none" offset={{ closed: 0, opened: lift }} style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}>
-            {showJumpToBottom && (
-              <View pointerEvents="box-none" style={{ height: 56, alignItems: "center", zIndex: 1 }}>
-                <GlassIconButton label="Go to bottom" systemImage="chevron.down" icon={ArrowDown01Icon} onPress={jumpToBottom} />
-              </View>
-            )}
             {/* The transcript blurs and fades under the composer like desktop's. */}
             <BottomFade height={dockHeight + 48} />
             <View
@@ -1197,10 +1226,17 @@ export default function ChatScreen() {
               style={{ paddingHorizontal: 12, paddingTop: 6, paddingBottom: dockPadding, gap: 8 }}
             >
               {(!question || answering) && (
-                <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 4, gap: 8 }}>
-                  {pr && prActionRequest && chat && (
+                // More pills than fit scroll sideways; the spacer still right-aligns them when they fit.
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  style={{ marginHorizontal: -12, flexGrow: 0 }}
+                  contentContainerStyle={{ flexGrow: 1, flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 8 }}
+                >
+                  {prAction && prActionRequest && chat && (
                     <PullRequestAction
-                      pr={pr}
+                      pr={prAction.pr}
                       disabled={busy || !!run}
                       onRun={() => void send(pullRequestActionBody(prActionRequest), false, prActionRequest)}
                     />
@@ -1213,7 +1249,7 @@ export default function ChatScreen() {
                   {params.id && Number(params.id) > 0 && <PortsChip key={`ports-${chatId}`} chatId={chatId} />}
                   {params.id && Number(params.id) > 0 && <SimulatorChip key={chatId} chatId={chatId} />}
                   {agents.length > 0 && <SubagentChip agents={agents} onPress={() => headerAction("agents")} />}
-                </View>
+                </ScrollView>
               )}
               {run?.approvals.map((approval) => (
                 <Approval
@@ -1510,6 +1546,7 @@ export default function ChatScreen() {
                       onPress={() => router.push({ pathname: "/permission-sheet", params: { chatId, ...(run ? { busy: "1" } : {}) } })}
                     />
                     <View style={{ flex: 1 }} />
+                    <PlanPill panel={planPanel} />
                     {contextUsage && contextUsage.size > 0 && params.id && (
                       <ContextRing
                         {...contextUsage}
@@ -1550,8 +1587,16 @@ export default function ChatScreen() {
                 </View>
               )}
             </View>
+            {/* Drawn last and floated above the dock, so showing it changes no other view's layout or order: either
+            replays the pills' layout transition. */}
+            {showJumpToBottom && (
+              <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: dockHeight, height: 56, alignItems: "center" }}>
+                <GlassIconButton label="Go to bottom" systemImage="chevron.down" icon={ArrowDown01Icon} onPress={jumpToBottom} />
+              </View>
+            )}
           </KeyboardStickyView>
         </PanelSwipe>
+        <PlanPanel panel={planPanel} />
       </View>
     </GenerativeUIProvider>
   );

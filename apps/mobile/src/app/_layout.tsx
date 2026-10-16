@@ -63,6 +63,7 @@ export default function Layout() {
                       <Stack.Screen name="accounts" options={{ title: "Accounts" }} />
                       <Stack.Screen name="settings" options={{ title: "Settings" }} />
                       <Stack.Screen name="appearance" options={{ title: "Appearance" }} />
+                      <Stack.Screen name="chat-display" options={{ title: "Chat" }} />
                       <Stack.Screen name="update-sheet" options={{ ...sheet, sheetAllowedDetents: "fitToContents" }} />
                       <Stack.Screen name="confirm-sheet" options={{ ...sheet, sheetAllowedDetents: "fitToContents" }} />
                       {/* Native search needs the header visible at presentation: enabling it later remounts the sheet. */}
@@ -74,12 +75,16 @@ export default function Layout() {
                       <Stack.Screen name="usage" options={{ title: "Plan usage" }} />
                       <Stack.Screen name="skills" options={{ title: "Skills" }} />
                       <Stack.Screen name="mcp" options={{ title: "MCP" }} />
+                      <Stack.Screen name="mcp-server" />
+                      <Stack.Screen name="mcp-add" options={{ ...sheet, title: "Add MCP server", sheetAllowedDetents: [1] }} />
                       <Stack.Screen name="local-mcp" options={{ title: "Milagre MCP" }} />
                       <Stack.Screen name="experimental" options={{ title: "Experimental" }} />
+                      <Stack.Screen name="chime-sheet" options={{ ...sheet, sheetAllowedDetents: "fitToContents" }} />
                       <Stack.Screen name="skill" options={{ title: "Skill" }} />
                       <Stack.Screen name="add-computer" options={{ ...sheet, sheetAllowedDetents: [1] }} />
                       <Stack.Screen name="pair" options={{ title: "Pairing" }} />
                       <Stack.Screen name="projects" options={{ title: "Projects" }} />
+                      <Stack.Screen name="canvas" options={{ title: "Canvas" }} />
                       <Stack.Screen name="project-settings" options={{ title: "Project" }} />
                       <Stack.Screen name="link-projects" options={{ ...sheet, sheetAllowedDetents: [1] }} />
                       <Stack.Screen name="link-chat" options={{ ...sheet, sheetAllowedDetents: [1] }} />

@@ -1,5 +1,5 @@
-// Settings > Experimental in Electron: the section is listed, its switch turns the every-Project sidebar on and off,
-// and Murilo mode shows a reply's tool calls in the chat, one row each, instead of folding them into one line.
+// Settings > Experimental in Electron: the section is listed and its switch turns the every-Project sidebar on and off.
+// Picking a notification chime saves it and plays it; the replay button plays it again.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -11,9 +11,11 @@ import { createRoot } from 'react-dom/client';
 import { SettingsNav, SettingsPanel } from '/src/components/Settings';
 import { useSettings } from '/src/lib/settings';
 import { useApplyOtherComputers } from '/src/lib/computers';
-import { ActivityBlock } from '/src/components/agents/ActivityBlock';
 import '/src/styles.css';
 window.enabledCalls = [];
+// Chimes record what would play instead of making noise.
+window.played = [];
+HTMLMediaElement.prototype.play = function () { window.played.push(this.src.split('/').pop().split('?')[0]); return Promise.resolve(); };
 window.savedShare = { id: "orphan", url: "https://share.milagre.cloud/s/orphan", title: "Deleted Chat page", createdAt: 1780000000000, designCount: 2 };
 window.shareCalls = [];
 window.milagre = {
@@ -30,13 +32,6 @@ window.milagre = {
   },
   computers: { setEnabled: async (on) => void window.enabledCalls.push(on) },
 };
-const step = (id, title, kind = 'shell') => ({ id, kind, title, status: 'done', note: '1s' });
-const entries = [
-  { type: 'step', step: step('a', 'Ran \`npm test\`') },
-  { type: 'text', text: 'Tests pass. Checking the build next.' },
-  { type: 'step', step: step('b', 'Read \`package.json\`', 'read') },
-  { type: 'step', step: step('c', 'Searched for \`muriloMode\`', 'search') },
-];
 function Fixture() {
   const [section, setSection] = useState('appearance');
   const { legacySidebar, otherComputers } = useSettings();
@@ -45,7 +40,6 @@ function Fixture() {
     <div data-legacy-sidebar={String(legacySidebar)} data-other-computers={String(otherComputers)} style={{ display: 'flex', gap: 12, height: '100vh', padding: 12 }}>
       <SettingsNav section={section} onSelect={setSection} onSelectProject={() => {}} onBack={() => {}} showProjectSettings={false} />
       <main style={{ flex: 1, minWidth: 0 }}><SettingsPanel section={section} models={[]} update={null} /></main>
-      <aside data-reply style={{ width: 320 }}><ActivityBlock entries={entries} /></aside>
     </div>
   );
 }
@@ -118,20 +112,7 @@ async function browserChecks() {
     await screenshot("on");
     await evaluate(`${toggle}.click()`);
     await waitFor(`document.querySelector('[data-legacy-sidebar]').dataset.legacySidebar === 'false'`);
-    const murilo = `document.querySelector('[role="switch"][aria-label="Murilo mode"], button[aria-label="Murilo mode"], input[aria-label="Murilo mode"]')`;
-    const reply = (selector) => `document.querySelector('[data-reply] ${selector}')`;
-    assert.equal(await evaluate(`!!${reply("[data-slot=activity]")}`), true, "Murilo mode is off by default: the activity folds into one line");
-    assert.equal(await evaluate(`!!${reply("[data-slot=activity-inline]")}`), false);
-    await evaluate(`${murilo}.click()`);
-    await waitFor(`!!${reply("[data-slot=activity-inline]")}`);
-    assert.equal(await evaluate(`!!${reply("[data-slot=activity]")}`), false, "Murilo mode leaves no fold");
-    const text = await evaluate(`${reply("[data-slot=activity-inline]")}.innerText`);
-    for (const shown of ["npm test", "Tests pass. Checking the build next.", "package.json", "muriloMode"])
-      assert.ok(text.includes(shown), `shows ${shown} in the chat`);
-    assert.ok(text.indexOf("npm test") < text.indexOf("Tests pass") && text.indexOf("Tests pass") < text.indexOf("package.json"), "in order");
-    await screenshot("murilo-on");
-    await evaluate(`${murilo}.click()`);
-    await waitFor(`!!${reply("[data-slot=activity]")}`);
+    assert.equal(await evaluate(`!!document.querySelector('[aria-label="Murilo mode"]')`), false, "Murilo mode moved to Settings › Chat");
     const other = `document.querySelector('[role="switch"][aria-label="Other computers"]')`;
     assert.equal(await evaluate(`document.querySelector('[data-other-computers]').dataset.otherComputers`), "false", "Other computers is off by default");
     await waitFor(`JSON.stringify(window.enabledCalls) === '[false]'`);
@@ -141,9 +122,31 @@ async function browserChecks() {
     await screenshot("other-computers-on");
     await evaluate(`${other}.click()`);
     await waitFor(`JSON.stringify(window.enabledCalls) === '[false,true,false]'`);
+    const chimeTrigger = `document.querySelector('button[aria-label="Notification chime"]')`;
+    assert.equal(await evaluate(`${chimeTrigger}.textContent.trim()`), "System default", "the system sound by default");
+    assert.equal(await evaluate(`!!document.querySelector("[data-chime-play]")`), false, "nothing to replay for the system sound");
+    await evaluate(`${chimeTrigger}.scrollIntoView({ block: "center" })`);
+    await evaluate(`${chimeTrigger}.click()`);
+    const chimeOption = (label) =>
+      `[...document.querySelectorAll('[role="listbox"][aria-label="Notification chime"] [role="option"]')].find((o) => o.textContent.trim() === ${JSON.stringify(label)})`;
+    await waitFor(`!!${chimeOption("Miracle")}`);
+    await screenshot("chime-menu");
+    await evaluate(`${chimeOption("Miracle")}.click()`);
+    await waitFor(`${chimeTrigger}.textContent.trim() === "Miracle"`);
+    assert.equal(await evaluate("window.played.length"), 1, "picking a chime plays it");
+    assert.match(await evaluate("window.played[0]"), /^chime_miracle/);
+    assert.equal(await evaluate(`JSON.parse(localStorage.getItem("milagre-settings")).notificationChime`), "miracle", "and saves it");
+    await screenshot("chime-miracle");
+    await evaluate(`document.querySelector("[data-chime-play]").click()`);
+    await evaluate(`${chimeTrigger}.click()`);
+    await waitFor(`!!${chimeOption("Bombastic side eye")}`);
+    await evaluate(`${chimeOption("Bombastic side eye")}.click()`);
+    await waitFor(`${chimeTrigger}.textContent.trim() === "Bombastic side eye"`);
+    assert.equal(await evaluate("window.played.length"), 3, "the replay button plays it again, and each pick plays");
+    assert.match(await evaluate("window.played[2]"), /^chime_bombastic_side_eye/);
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: Settings lists an Experimental section whose switches turn the every-Project sidebar and Murilo mode on and off, both off by default; Murilo mode shows each tool call and the notes between them in order, with no fold; Other computers is off by default and tells main each time it flips",
+      "PASS: Settings lists an Experimental section whose switch turns the every-Project sidebar on and off, off by default, with no Murilo mode; Other computers is off by default and tells main each time it flips; the notification chime starts on the system sound, and picking one saves and plays it",
     );
     app.exit(0);
   } catch (error) {

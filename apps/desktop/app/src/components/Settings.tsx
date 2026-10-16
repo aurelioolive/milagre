@@ -7,6 +7,7 @@ import { ProjectAccountsGroup, ProjectAccountsSettings } from "./ProjectAccounts
 import { AccountsSettings } from "./AccountsSettings";
 import { SkillsSettings } from "./SkillsSettings";
 import { McpSettings } from "./McpSettings";
+import { Switch } from "./primitives/Switch";
 import { LocalMcpSettings } from "./LocalMcpSettings";
 import { ipcErrorMessage } from "@milagre/shared/result";
 import {
@@ -31,16 +32,21 @@ import type { ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowLeft02Icon,
+  BookOpen01Icon,
+  BubbleChatIcon,
+  FlaskConicalIcon,
+  FolderKeyIcon,
   InformationCircleIcon,
   LaptopIcon,
-  MagicWand01Icon,
+  LaptopPhoneSyncIcon,
   PaintBoardIcon,
-  PlugSocketIcon,
+  Plug01Icon,
   SecurityCheckIcon,
+  ServerIcon,
   Settings01Icon,
   SmartphoneIcon,
-  TestTube01Icon,
-  UserMultipleIcon,
+  UserCircleIcon,
+  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { DOT_COLOR, computerTone, routeLine, seenAgo, useComputers } from "../lib/computers";
 import type { FilesToCopy as FilesToCopyResult, PairedDevice, PhoneStatus, ReleaseChannel, UpdateState, WorktreeSetupSettings } from "../electron";
@@ -49,8 +55,6 @@ import { PERMISSION_MODES } from "../model";
 import type { ModelOption, PermissionMode } from "../model";
 import { providerForId, resolveModel } from "../lib/models";
 import { updateSettings, useSettings } from "../lib/settings";
-import { PANEL_TRANSLUCENCY_RANGE, WINDOW_TRANSLUCENCY_RANGE } from "../lib/settings";
-import { RangeSlider } from "./primitives/RangeSlider";
 import type { ClaudeReplies, UsageDisplay } from "../lib/settings";
 import type { ChatOrder } from "../lib/chat-list";
 import { useEditors } from "../lib/editors";
@@ -62,6 +66,17 @@ import { Select } from "./primitives/Select";
 import { ModeControl, ThemePicker } from "./settings/ThemePicker";
 import { CustomThemeEditor } from "./settings/CustomThemeEditor";
 import { DEFAULT_THEME_ID, seedsFrom } from "@milagre/shared/themes";
+import { NOTIFICATION_CHIMES, type NotificationChime } from "@milagre/shared/notification-chimes";
+import {
+  DETAIL_LEVEL_TITLE,
+  EXPAND_REASONING_HINT,
+  EXPAND_REASONING_TITLE,
+  TOOL_CALL_DISPLAYS,
+  TOOL_CALL_DISPLAY_HINT,
+  TOOL_CALL_DISPLAY_TITLE,
+  type ToolCallDisplay,
+} from "@milagre/shared/chat-display";
+import { playNotificationChime } from "../lib/notification-chime";
 import { ProviderLogo } from "./ProviderLogo";
 import { ScrollArea } from "./primitives/ScrollArea";
 import { WorkspaceIcon } from "./WorkspaceIcon";
@@ -82,6 +97,7 @@ export type SettingsSection =
   | "project-accounts"
   | "accounts"
   | "appearance"
+  | "chat"
   | "skills"
   | "mcp"
   | "local-mcp"
@@ -94,14 +110,15 @@ export type SettingsSection =
 
 const SECTIONS: Array<{ key: SettingsSection; label: string; icon: IconData }> = [
   { key: "general", label: "General", icon: Settings01Icon },
-  { key: "accounts", label: "Accounts", icon: UserMultipleIcon },
-  { key: "project-accounts", label: "Project Accounts", icon: UserMultipleIcon },
+  { key: "accounts", label: "Accounts", icon: UserCircleIcon },
+  { key: "project-accounts", label: "Project Accounts", icon: FolderKeyIcon },
   { key: "appearance", label: "Appearance", icon: PaintBoardIcon },
-  { key: "skills", label: "Skills", icon: MagicWand01Icon },
-  { key: "mcp", label: "MCP", icon: PlugSocketIcon },
-  { key: "local-mcp", label: "Milagre MCP", icon: PlugSocketIcon },
-  { key: "devices", label: "Devices", icon: SmartphoneIcon },
-  { key: "experimental", label: "Experimental", icon: TestTube01Icon },
+  { key: "chat", label: "Chat", icon: BubbleChatIcon },
+  { key: "skills", label: "Skills", icon: BookOpen01Icon },
+  { key: "mcp", label: "MCP", icon: Plug01Icon },
+  { key: "local-mcp", label: "Milagre MCP", icon: ServerIcon },
+  { key: "devices", label: "Devices", icon: LaptopPhoneSyncIcon },
+  { key: "experimental", label: "Experimental", icon: FlaskConicalIcon },
   { key: "privacy", label: "Privacy & AI", icon: SecurityCheckIcon },
   { key: "about", label: "About", icon: InformationCircleIcon },
 ];
@@ -141,12 +158,18 @@ export function SettingsNav({
   const imageOf = useProjectImages(rows.map((row) => row.path));
   return (
     <aside aria-label="Settings navigation" className="flex h-full w-[224px] shrink-0 flex-col overflow-hidden rounded-window bg-surface shadow-card">
-      <div aria-hidden className="h-8 shrink-0" />
-      <GlideGroup>
-        <RailButton icon={<Icon icon={ArrowLeft02Icon} />} label="Back" onClick={onBack} />
-      </GlideGroup>
-      <div className="mx-4 my-2 h-px bg-line" />
-      <div className="mx-2 flex h-8 items-center px-2 text-[12.5px] font-medium text-ink-3">App</div>
+      <div aria-hidden className="h-[calc(var(--window-chrome-height)-12px)] shrink-0" />
+      <div className="mx-2 mb-1.5 flex h-9 shrink-0 items-center gap-1 px-1">
+        <button
+          type="button"
+          aria-label="Back"
+          onClick={onBack}
+          className="flex size-7 items-center justify-center rounded-[7px] text-ink-2 transition-[background-color,color,transform] duration-150 hover:bg-hover-2 hover:text-ink active:scale-[0.96]"
+        >
+          <Icon icon={ArrowLeft02Icon} size={16} />
+        </button>
+        <h2 className="text-[15px] font-semibold text-ink">Settings</h2>
+      </div>
       <GlideGroup>
         {SECTIONS.map((item) => (
           <RailButton key={item.key} icon={<Icon icon={item.icon} />} label={item.label} active={section === item.key} onClick={() => onSelect(item.key)} />
@@ -343,7 +366,7 @@ function ComputerSettings({ id, onRemoved }: { id: string; onRemoved: () => void
       {computer.state === "online" && (
         <section data-computer-mcp className="mt-6">
           <h2 className="px-1 text-[12px] font-medium text-ink-3">MCP servers</h2>
-          <McpSettings key={id} bridge={bridgeFor(id)} />
+          <McpSettings key={id} bridge={bridgeFor(id)} remote />
           <LocalMcpSettings key={`local-${id}`} bridge={bridgeFor(id)} />
         </section>
       )}
@@ -398,40 +421,35 @@ function Row({ label, description, children }: { label: string; description?: st
   );
 }
 
-function Switch({ label, checked, onChange, disabled = false }: { label: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
+function NotificationChimeSetting() {
+  const { notificationChime } = useSettings();
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative flex h-5 w-8 items-center rounded-full transition-colors duration-150 disabled:opacity-40 ${checked ? "bg-ink" : "bg-line-strong"}`}
-    >
-      <span
-        className={`absolute left-0.5 size-4 rounded-full bg-surface shadow-card transition-transform duration-150 ${checked ? "translate-x-3" : "translate-x-0"}`}
-      />
-    </button>
-  );
-}
-
-function PercentSlider({
-  label,
-  value,
-  range,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  range: { min: number; max: number; step: number };
-  onChange: (value: number) => void;
-}) {
-  return (
-    <span className="flex items-center gap-3">
-      <RangeSlider label={label} value={value} {...range} formatValueText={(v) => `${v}%`} onValueChange={onChange} className="w-44" />
-      <span className="w-10 text-right tabular-nums text-ink-2">{value}%</span>
-    </span>
+    <Row label="Notification chime" description="Plays when a Chat finishes or needs you. Picking one plays it.">
+      <div className="flex items-center gap-1.5">
+        {notificationChime !== "system" && (
+          <button
+            type="button"
+            aria-label="Play notification chime"
+            title="Play"
+            data-chime-play
+            className="flex size-7 items-center justify-center rounded-[7px] border border-line text-ink-2 hover:bg-hover"
+            onClick={() => playNotificationChime(notificationChime)}
+          >
+            <Icon icon={VolumeHighIcon} size={14} />
+          </button>
+        )}
+        <Select<NotificationChime>
+          label="Notification chime"
+          width={200}
+          value={notificationChime}
+          onChange={(chime) => {
+            updateSettings({ notificationChime: chime });
+            playNotificationChime(chime);
+          }}
+          options={NOTIFICATION_CHIMES.map((chime) => ({ value: chime.id, label: chime.label }))}
+        />
+      </div>
+    </Row>
   );
 }
 
@@ -455,6 +473,26 @@ export function DesignsSettings() {
         </p>
       )}
     </div>
+  );
+}
+
+function ChatSettings() {
+  const settings = useSettings();
+  return (
+    <Group title={DETAIL_LEVEL_TITLE}>
+      <Row label={EXPAND_REASONING_TITLE} description={EXPAND_REASONING_HINT}>
+        <Switch label={EXPAND_REASONING_TITLE} checked={settings.expandReasoning} onChange={(expandReasoning) => updateSettings({ expandReasoning })} />
+      </Row>
+      <Row label={TOOL_CALL_DISPLAY_TITLE} description={TOOL_CALL_DISPLAY_HINT}>
+        <Select<ToolCallDisplay>
+          label={TOOL_CALL_DISPLAY_TITLE}
+          width={300}
+          value={settings.toolCallDisplay}
+          onChange={(toolCallDisplay) => updateSettings({ toolCallDisplay })}
+          options={TOOL_CALL_DISPLAYS.map((display) => ({ value: display.id, label: display.label, description: display.description }))}
+        />
+      </Row>
+    </Group>
   );
 }
 
@@ -491,12 +529,6 @@ function ExperimentalSettings() {
           <Switch label="Use legacy sidebar" checked={settings.legacySidebar} onChange={(legacySidebar) => updateSettings({ legacySidebar })} />
         </Row>
         <Row
-          label="Murilo mode"
-          description="Shows every tool call in the chat, one row each, with the agent's notes between them. Replies no longer fold their activity into one line."
-        >
-          <Switch label="Murilo mode" checked={settings.muriloMode} onChange={(muriloMode) => updateSettings({ muriloMode })} />
-        </Row>
-        <Row
           label="Other computers"
           description="Drive the chats of other Macs running Milagre from this window. Add one from the laptop button at the bottom of the sidebar; their Projects join the sidebar."
         >
@@ -508,6 +540,7 @@ function ExperimentalSettings() {
         >
           <Switch label="Ultracode Fatality" checked={settings.ultracodeFatality} onChange={(ultracodeFatality) => updateSettings({ ultracodeFatality })} />
         </Row>
+        <NotificationChimeSetting />
         <Row label="Custom theme" description={'Build a theme from a few colors. It shows up as "Custom" in Appearance.'}>
           <Switch
             label="Custom theme"
@@ -528,36 +561,6 @@ function ExperimentalSettings() {
       {settings.customThemeEnabled && (
         <Group title="Custom theme">
           <CustomThemeEditor />
-        </Group>
-      )}
-      {navigator.platform.startsWith("Mac") && (
-        <Group title="Window">
-          <Row label="Translucent window" description="Let what's behind Milagre show through, blurred.">
-            <Switch label="Translucent window" checked={settings.windowTranslucent} onChange={(windowTranslucent) => updateSettings({ windowTranslucent })} />
-          </Row>
-          {settings.windowTranslucent && (
-            <>
-              <Row label="Window" description="How much of the desktop shows through the window itself.">
-                <PercentSlider
-                  label="Window translucency"
-                  value={settings.windowTranslucency}
-                  range={WINDOW_TRANSLUCENCY_RANGE}
-                  onChange={(windowTranslucency) => updateSettings({ windowTranslucency })}
-                />
-              </Row>
-              <Row label="Panels" description="How much shows through the sidebar, panels and fields.">
-                <PercentSlider
-                  label="Panel translucency"
-                  value={settings.panelTranslucency}
-                  range={PANEL_TRANSLUCENCY_RANGE}
-                  onChange={(panelTranslucency) => updateSettings({ panelTranslucency })}
-                />
-              </Row>
-              <Row label="Dot grid" description="Keep the dots on the window background.">
-                <Switch label="Dot grid" checked={settings.translucentDots} onChange={(translucentDots) => updateSettings({ translucentDots })} />
-              </Row>
-            </>
-          )}
         </Group>
       )}
     </>
@@ -1873,20 +1876,22 @@ export function SettingsPanel({
   return (
     <ScrollArea className="h-full">
       <div className="mx-auto w-full max-w-[640px] px-6 pt-14 pb-10">
-        <h1 className="text-[22px] font-semibold tracking-[-0.01em] text-ink">{title}</h1>
+        {/* MCP draws its own title row, with Refresh and Add server beside it. */}
+        {section !== "mcp" && <h1 className="text-[22px] font-semibold tracking-[-0.01em] text-ink">{title}</h1>}
         {section === "general" && <GeneralSettings models={models} />}
         {section === "accounts" && <AccountsSettings />}
         {section === "project-accounts" && (
           <ProjectAccountsSettings projectPath={accountScope ?? project?.path} onManageAccounts={() => onSectionChange?.("accounts")} />
         )}
         {section === "appearance" && <AppearanceSettings />}
+        {section === "chat" && <ChatSettings />}
         {section === "skills" &&
           (project ? (
             <SkillsSettings key={project.path} projectPath={project.path} />
           ) : (
             <p className="mt-6 text-[13px] text-ink-3">Open a project to see its skills.</p>
           ))}
-        {section === "mcp" && <McpSettings />}
+        {section === "mcp" && <McpSettings title={title} />}
         {section === "local-mcp" && <LocalMcpSettings bridge={window.milagre} />}
         {section === "devices" && <DevicesSettings />}
         {section === "experimental" && <ExperimentalSettings />}

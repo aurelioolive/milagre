@@ -5,10 +5,14 @@ import {
   applyDesignOperations,
   createDesignInstance,
   detachDesignInstance,
+  designDefaultFill,
+  designFontsLoaded,
   designHtml,
+  designIcons,
   designInstanceRoot,
   designLayout,
   diffDesignDocuments,
+  loadDesignFonts,
   type DesignDocument,
   type DesignNode,
   type DesignOperation,
@@ -24,6 +28,8 @@ import { Select } from "../primitives/Select";
 
 export const DESIGN_SAVED = "milagre:design-saved";
 export type DesignSaved = { chatId: string; artifact: Artifact };
+export const DESIGN_DELETED = "milagre:design-deleted";
+export type DesignDeleted = { chatId: string; id: string };
 
 const fieldClass =
   "min-w-0 w-full rounded-control border border-line bg-canvas px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent disabled:opacity-50";
@@ -237,14 +243,29 @@ export function DesignDocumentEditor({
     },
     [cacheKey, fieldDrafts],
   );
+  // Catalog families load once per family; until then the preview draws the fallback the document names. The counter only
+  // re-renders, so fontsReady is read again from the loaded fonts.
+  const [, setLoadedFonts] = useState(0);
+  const fontsReady = designFontsLoaded(document);
+  useEffect(() => {
+    if (fontsReady) return;
+    let current = true;
+    loadDesignFonts(document)
+      .then(() => current && setLoadedFonts((count) => count + 1))
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [document, fontsReady]);
   // Pending saves reject edits. Removing the controller also clears any unacknowledged pointer/keyboard movement.
   const { html, previewError } = useMemo(() => {
     try {
-      return { html: artifactDocument(designHtml(document, { interactive: !saving })), previewError: "" };
+      // Built again once the catalog fonts load, so the preview embeds them.
+      return { html: artifactDocument(designHtml(document, { interactive: !saving })), previewError: "", fontsReady };
     } catch (cause) {
-      return { html: "", previewError: designError(cause) };
+      return { html: "", previewError: designError(cause), fontsReady };
     }
-  }, [document, saving]);
+  }, [document, saving, fontsReady]);
   const syncSelection = useCallback(
     () =>
       frame.current?.contentWindow?.postMessage(
@@ -552,13 +573,28 @@ export function DesignDocumentEditor({
     const id = `${type}-${crypto.randomUUID().slice(0, 8)}`;
     const node: DesignNode = {
       id,
-      name: type === "text" ? "Text" : type === "frame" ? "Frame" : type === "image" ? "Image" : type === "ellipse" ? "Ellipse" : "Rectangle",
+      name:
+        type === "text"
+          ? "Text"
+          : type === "frame"
+            ? "Frame"
+            : type === "image"
+              ? "Image"
+              : type === "icon"
+                ? "Icon"
+                : type === "ellipse"
+                  ? "Ellipse"
+                  : "Rectangle",
       type,
       x: 32,
       y: 32,
-      width: type === "text" ? 240 : 160,
-      height: type === "text" ? 44 : 120,
-      ...(type === "text" ? { text: "New text", fontSize: 24, fill: "#1f2937" } : { fill: "#dce6df", radius: 12 }),
+      width: type === "text" ? 240 : type === "icon" ? 24 : 160,
+      height: type === "text" ? 44 : type === "icon" ? 24 : 120,
+      ...(type === "text"
+        ? { text: "New text", fontSize: 24, fill: "#1f2937" }
+        : type === "icon"
+          ? { icon: "star", fill: "#1f2937", strokeWidth: 2 }
+          : { fill: "#dce6df", radius: 12 }),
       ...(type === "frame" ? { layout: "free" as const } : {}),
     };
     if (change([{ op: "insert", node }])) setSelection([id]);
@@ -1082,19 +1118,21 @@ export function DesignDocumentEditor({
                     )}
                     <Field
                       label={selectedNode.type === "text" ? "Text color" : "Fill"}
-                      value={selectedNode.fill ?? (selectedNode.type === "text" ? "#202720" : selectedNode.type === "frame" ? "transparent" : "#d8ded8")}
+                      value={selectedNode.fill ?? designDefaultFill(selectedNode)}
                       disabled={saving}
                       onCommit={(fill) => patch({ fill })}
                     />
                     <div className="grid grid-cols-2 gap-2">
-                      <Field
-                        label="Radius"
-                        value={selectedNode.radius ?? 0}
-                        number
-                        min={0}
-                        disabled={saving}
-                        onCommit={(radius) => patch({ radius: Number(radius) })}
-                      />
+                      {selectedNode.type !== "icon" && (
+                        <Field
+                          label="Radius"
+                          value={selectedNode.radius ?? 0}
+                          number
+                          min={0}
+                          disabled={saving}
+                          onCommit={(radius) => patch({ radius: Number(radius) })}
+                        />
+                      )}
                       <Field
                         label="Opacity"
                         value={selectedNode.opacity ?? 1}
@@ -1105,17 +1143,44 @@ export function DesignDocumentEditor({
                         onCommit={(opacity) => patch({ opacity: Number(opacity) })}
                       />
                     </div>
-                    <Field label="Stroke" value={selectedNode.stroke ?? "transparent"} disabled={saving} onCommit={(stroke) => patch({ stroke })} />
-                    <Field
-                      label="Stroke width"
-                      value={selectedNode.strokeWidth ?? (selectedNode.stroke ? 1 : 0)}
-                      number
-                      min={0}
-                      disabled={saving}
-                      onCommit={(strokeWidth) => patch({ strokeWidth: Number(strokeWidth) })}
-                    />
+                    {selectedNode.type !== "icon" && (
+                      <Field label="Stroke" value={selectedNode.stroke ?? "transparent"} disabled={saving} onCommit={(stroke) => patch({ stroke })} />
+                    )}
+                    {selectedNode.type !== "icon" && (
+                      <Field
+                        label="Stroke width"
+                        value={selectedNode.strokeWidth ?? (selectedNode.stroke ? 1 : 0)}
+                        number
+                        min={0}
+                        disabled={saving}
+                        onCommit={(strokeWidth) => patch({ strokeWidth: Number(strokeWidth) })}
+                      />
+                    )}
                     {selectedNode.type === "image" && (
                       <Field label="Image URL" value={selectedNode.src ?? ""} disabled={saving} onCommit={(src) => patch({ src })} />
+                    )}
+                    {selectedNode.type === "icon" && (
+                      <>
+                        <Field
+                          label="Icon"
+                          value={selectedNode.icon ?? ""}
+                          disabled={saving}
+                          onCommit={(icon) => {
+                            const name = icon.trim().toLowerCase();
+                            if (Object.hasOwn(designIcons, name)) patch({ icon: name });
+                            else setNotice(`No Lucide icon named "${name}". Try a name from lucide.dev/icons.`);
+                          }}
+                        />
+                        <Field
+                          label="Line weight"
+                          value={selectedNode.strokeWidth ?? 2}
+                          number
+                          min={0.5}
+                          max={4}
+                          disabled={saving}
+                          onCommit={(strokeWidth) => patch({ strokeWidth: Number(strokeWidth) })}
+                        />
+                      </>
                     )}
                     {selectedNode.type === "frame" && (
                       <>

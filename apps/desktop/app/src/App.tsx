@@ -57,7 +57,7 @@ import {
   sessionIdFromKey,
 } from "./lib/agent-runs";
 import { attachmentPrompt } from "./lib/media";
-import { BLOCKERS, isBlockerDismissed, pullRequestBlockers } from "./lib/pr-blockers";
+import { BLOCKERS, pullRequestAction } from "./lib/pr-blockers";
 import { pullRequestActionBody, pullRequestActionContext, pullRequestActionPrompt } from "@milagre/shared/pr-action";
 import { COMPACT_COMMAND } from "@milagre/shared/compaction";
 import { capabilitiesFrom, keepIfSame, mergeModels, nextSelection, providerForId, resolveModel } from "./lib/models";
@@ -70,7 +70,7 @@ import { ChangesPanel } from "./components/changes/ChangesPanel";
 import { isMac } from "./lib/shortcut-hints";
 import { CORNER_PITCH, PanelToggles, sidePanelCount, useSidePanels } from "./components/agents/PanelToggles";
 import { ChangesPanelSlot } from "./components/changes/ChangesPanelSlot";
-import { AttentionButton, ChangesToggle, DiffBar } from "./components/changes/ChangesChrome";
+import { AttentionButton, ChangesToggle, DiffBar, LayoutToggle } from "./components/changes/ChangesChrome";
 import { AnimatePresence } from "motion/react";
 import { useDiffComments } from "./components/changes/useDiffComments";
 import { formatCommentsMessage } from "./lib/diff-comments";
@@ -87,7 +87,9 @@ import { REMOTE_FILES_NOTICE, usePastedImages } from "./components/usePastedImag
 import { DotBackground } from "./components/DotBackground";
 import { StartupSplash } from "./components/StartupSplash";
 import SidebarNav from "./components/SidebarNav";
-import { cachedProjectCopy, rememberProjectCopy, runKeys } from "./lib/sidebar-scopes";
+import { cachedProjectCopy, rememberProjectCopy, runKeys, useScopeStates } from "./lib/sidebar-scopes";
+import { activeChatKeys, gridChats, readChatLayout, saveChatLayout, type ChatLayout } from "./lib/chat-grid";
+import { ChatGrid } from "./components/ChatGrid";
 import { chatRevealPath } from "./lib/reveal";
 import type { SettingsSection } from "./components/Settings";
 import { createPendingChat, isListedChat, pendingChatSessionId, withPendingChat, type PendingChat } from "@milagre/shared/chats";
@@ -95,6 +97,7 @@ import { getSettings, toggleTheme, updateSettings, useApplyTheme, useSettings } 
 import { EditorLinks, Notice } from "./components/editor-links";
 // Notice above is editor-links' toast; this is the dismissable notice card.
 import { showNotice } from "./lib/notice";
+import { RELOAD_HINT } from "@milagre/shared/chat-reload";
 import { Notice as NoticeCard } from "./components/Notice";
 import { openInEditor } from "./lib/editors";
 import type { RuntimeConnection } from "./electron";
@@ -122,6 +125,7 @@ import { delegatedChats, useLinkedWork } from "./lib/linked-work";
 import { DraftChatComposer } from "./components/DraftChatComposer";
 import { TerminalPanel } from "./components/terminal/TerminalPanel";
 import { busyTerminals, newTerminal, useTerminalSync } from "./lib/terminal-actions";
+import { playNotificationChime } from "./lib/notification-chime";
 import type { ChatRowActions, SidebarRecent } from "./components/sidebar/ChatRow";
 
 // Not on screen at first paint, so each loads as its own chunk; the effect in App fetches them once the window is idle.
@@ -154,6 +158,7 @@ function latestSessionId(state: CoordinatorState) {
 
 const NO_MESSAGES: ChatMessage[] = [];
 const NO_REFS: string[] = [];
+const NO_KEYS: string[] = [];
 // `sent`: the main process saved the message; the preview stays until the saved message reaches the window's state.
 type PendingSend = PendingChat & { view: number; projectPath: string; originSessionId: number | null; originWorktreeId: number; sent?: boolean };
 const NO_WORKTREE = -1;
@@ -310,8 +315,14 @@ function App() {
     localStorage.setItem(CHAT_MODELS_KEY, JSON.stringify(chatModels.current));
   };
   const selectedCapability = capabilityFor(selectedModel, capabilities);
-  const permissionMode = composerPrefs.permissionMode;
   const [view, setView] = useState<"chat" | "canvas" | "settings">("chat");
+  const [layout, setLayout] = useState<ChatLayout>(() => readChatLayout(localStorage));
+  const toggleLayout = () =>
+    setLayout((current) => {
+      const next = current === "grid" ? "single" : "grid";
+      saveChatLayout(localStorage, next);
+      return next;
+    });
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   useEffect(() => {
@@ -594,16 +605,9 @@ function App() {
   const terminalChatRef = useRef(terminalChatId);
   terminalChatRef.current = terminalChatId;
   useTerminalSync(terminalChatId);
-  const selectedPullRequest = selectedWorktree && pullRequests[selectedWorktree.path];
-  const pullRequestBlocker = selectedPullRequest
-    ? pullRequestBlockers(selectedPullRequest).find((blocker) => !isBlockerDismissed(dismissedBlockers, blocker, selectedPullRequest))
-    : undefined;
-  // The pill's action, checked here too: a PR without a number yet shows no pill instead of sending a broken one.
-  const pullRequestActionRequest =
-    selectedPullRequest && pullRequestBlocker
-      ? pullRequestActionContext({ action: pullRequestBlocker, pr: selectedPullRequest.number, url: selectedPullRequest.url })
-      : null;
   const run = project && selectedSession ? agentRuns.runs[chatKey(project.path, selectedSession.id)] : undefined;
+  // A Chat another Chat started (MCP, Delegation) has no pick of its own: show the mode its turn runs in, not the default.
+  const permissionMode = composerPrefs.pickedPermissionMode ?? run?.permissionMode ?? composerPrefs.permissionMode;
   const waitingStepIds = useMemo(() => run?.approvals.flatMap((request) => (request.stepId ? [request.stepId] : [])), [run?.approvals]);
   const agentPorts = useAgentPorts();
   const isSending = preparingHere || Boolean(run);
@@ -617,6 +621,7 @@ function App() {
     notifyOnCompletion,
     showDockBadge,
     notifyWhenWaiting,
+    notificationChime,
     showAttentionButton,
     floatingInbox,
   } = useSettings();
@@ -751,6 +756,24 @@ function App() {
     [attentionChats, states, projectName],
   );
   const delegated = useStableSet(useMemo(() => delegatedChats(linkedWork, project?.path ?? ""), [linkedWork, project?.path]));
+  // The grid: every active Chat across Projects (the sidebar's reads of the ones not open, then this window's), the focused one too.
+  const gridOn = layout === "grid" && view === "chat";
+  const { states: scopeStates } = useScopeStates(gridOn, NO_KEYS);
+  const gridStates = useMemo(() => ({ ...scopeStates, ...states }), [scopeStates, states]);
+  const focusedChatKey = project && selectedSession && selectedSession.id > 0 ? chatKey(project.path, selectedSession.id) : null;
+  const activeKeys = useMemo(
+    () => (gridOn ? activeChatKeys(agentRuns.runs, linkedWork, gridStates) : NO_KEYS),
+    [gridOn, agentRuns.runs, linkedWork, gridStates],
+  );
+  const [gridTiles, setGridTiles] = useState<readonly string[]>(NO_KEYS);
+  const nextGridTiles = gridChats(gridTiles, activeKeys, gridOn ? focusedChatKey : null);
+  if (nextGridTiles !== gridTiles) setGridTiles(nextGridTiles);
+  const shownTiles = gridOn && focusedChatKey ? gridTiles : NO_KEYS;
+  const shownTilesRef = useRef(shownTiles);
+  shownTilesRef.current = shownTiles;
+  const focusedChatKeyRef = useRef(focusedChatKey);
+  focusedChatKeyRef.current = focusedChatKey;
+  const delegatedKeys = useMemo(() => new Set(linkedWork.delegations.flatMap((item) => (item.to_chat ? [item.to_chat] : []))), [linkedWork]);
   // Chats carry a summary of their messages; only an older host's state, without one, is grouped message by message.
   const messagesBySession = useMemo(() => {
     const grouped = new Map<number, ChatMessage[]>();
@@ -764,6 +787,22 @@ function App() {
   }, [sidebarState?.messages, sidebarState?.sessions]);
   // oxlint-disable-next-line react/use-memo -- useMemo is given a factory function reference so the instance is created once
   const readPullRequestRefs = useMemo(pullRequestRefsCache, []);
+  // The open Chat's PRs, the same list its sidebar row shows, so the composer's action and the row agree.
+  const selectedPullRequests =
+    project && selectedSession && selectedWorktree
+      ? chatPullRequests(
+          selectedSession.summary
+            ? (selectedSession.summary.pullRequests ?? NO_REFS)
+            : readPullRequestRefs(chatKey(project.path, selectedSession.id), messagesBySession.get(selectedSession.id) ?? NO_MESSAGES),
+          chatPrs[selectedWorktree.path] ?? {},
+          pullRequests[selectedWorktree.path] ?? undefined,
+        )
+      : [];
+  const pullRequestBlockerAction = pullRequestAction(selectedPullRequests, dismissedBlockers);
+  // The pill's action, checked here too: a PR without a number yet shows no pill instead of sending a broken one.
+  const pullRequestActionRequest = pullRequestBlockerAction
+    ? pullRequestActionContext({ action: pullRequestBlockerAction.blocker, pr: pullRequestBlockerAction.pr.number, url: pullRequestBlockerAction.pr.url })
+    : null;
   const previousChats = useRef<SidebarRecent[]>([]);
   // Chats with an archive under way, by chat key: each keeps its row, under the progress, until the archive ends.
   const [archivingChats, setArchivingChats] = useState<ReadonlySet<string>>(() => new Set());
@@ -837,8 +876,8 @@ function App() {
     project,
     archivingChats,
   ]);
-  const latest = useRef({ patchChat, revealChat, openChatInEditor, openGitDialog, checkArchive, archiveChat, linkChatIssue, unlinkChatIssue });
-  latest.current = { patchChat, revealChat, openChatInEditor, openGitDialog, checkArchive, archiveChat, linkChatIssue, unlinkChatIssue };
+  const latest = useRef({ patchChat, revealChat, openChatInEditor, openGitDialog, checkArchive, archiveChat, linkChatIssue, unlinkChatIssue, reloadChat });
+  latest.current = { patchChat, revealChat, openChatInEditor, openGitDialog, checkArchive, archiveChat, linkChatIssue, unlinkChatIssue, reloadChat };
   // The main process applies chat row actions to the latest state, so a turn that finished since the last render isn't lost.
   function patchChat(sessionId: number, patch: SessionPatch) {
     const current = projectRef.current;
@@ -1069,6 +1108,12 @@ function App() {
   useEffect(() => {
     void window.milagre.setNotifyWhenWaiting(notifyWhenWaiting).catch(() => {});
   }, [notifyWhenWaiting]);
+
+  // A chat's notification goes silent and this window plays the Experimental chime instead.
+  useEffect(() => {
+    void window.milagre.setNotificationChime?.(notificationChime).catch(() => {});
+  }, [notificationChime]);
+  useEffect(() => window.milagre.onPlayChime?.(playNotificationChime), []);
 
   // A turn that ends in the open project while Milagre is in the background gets a completion alert.
   useEffect(
@@ -1505,6 +1550,18 @@ function App() {
     await reportChatAction(linked(), "Could not link issue", setNotice);
   }
 
+  // Reload chat: a running turn stops and the agent's process ends; the next message resumes the session in a new
+  // one, which reads MCP servers, skills and the sign-in again.
+  async function reloadChat(sessionId: number) {
+    const path = project?.path;
+    if (!path) return;
+    const reloaded = async () => {
+      await bridgeForKey(path).reloadChat(chatKey(path, sessionId));
+      showNotice("Chat reloaded. Your next message starts a fresh agent.");
+    };
+    await reportChatAction(reloaded(), "Could not reload chat", setNotice);
+  }
+
   async function unlinkChatIssue(sessionId: number) {
     const path = project?.path;
     const worktreeId = openState()?.sessions[sessionId]?.worktree_id;
@@ -1601,7 +1658,17 @@ function App() {
     function handleShortcut(event: KeyboardEvent) {
       if (selectedLinkRef.current) return;
       if (event.defaultPrevented || event.isComposing || isModalOpen()) return;
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (!(event.metaKey || event.ctrlKey)) return;
+      // ⌘⌥← and ⌘⌥→ move focus to the grid's previous and next tile.
+      if (event.altKey) {
+        const tiles = shownTilesRef.current;
+        const step = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+        if (!step || tiles.length < 2 || event.shiftKey) return;
+        event.preventDefault();
+        const at = tiles.indexOf(focusedChatKeyRef.current ?? "");
+        openLinkedChat(tiles[(at + step + tiles.length) % tiles.length]);
+        return;
+      }
       if (event.shiftKey) {
         if (event.key.toLowerCase() === "t") {
           event.preventDefault();
@@ -1613,6 +1680,9 @@ function App() {
           event.preventDefault();
           changes.closeDiff();
           setView("canvas");
+        } else if (event.key.toLowerCase() === "m") {
+          event.preventDefault();
+          toggleLayout();
         }
         return;
       }
@@ -1695,6 +1765,7 @@ function App() {
     () => ({
       onRename: (id, title) => latest.current.patchChat(Number(id), { title }),
       onMarkUnread: (id, unread) => latest.current.patchChat(Number(id), { unread }),
+      onReload: (id) => void latest.current.reloadChat(Number(id)),
       onPin: (id, order) => latest.current.patchChat(Number(id), order == null ? { pinned: false, pin_order: undefined } : { pinned: true, pin_order: order }),
       ...(remoteProject
         ? { remote: true }
@@ -2044,6 +2115,18 @@ function App() {
       },
     ];
     if (view === "settings") commands.push({ id: "back-to-chat", label: "Back to chat", group: "Actions", icon: "chat", run: () => setView("chat") });
+    commands.push({
+      id: "chat-layout",
+      label: layout === "grid" ? "Show one Chat" : "Show active Chats as a grid",
+      group: "Actions",
+      icon: "chat",
+      shortcut: `${modifier}⇧M`,
+      keywords: "grid layout split multiple chats tiles",
+      run: () => {
+        setView("chat");
+        toggleLayout();
+      },
+    });
     commands.push(...settingsCommands(getSettings(), updateSettings));
     if (selectedSession && view === "chat") {
       const sessionId = selectedSession.id;
@@ -2095,6 +2178,15 @@ function App() {
           group: "Current chat",
           icon: "unread",
           run: () => patchChat(sessionId, { unread: !selectedSession.unread }),
+        },
+        {
+          id: "reload",
+          label: "Reload chat",
+          group: "Current chat",
+          icon: "reload",
+          detail: RELOAD_HINT,
+          keywords: "restart agent mcp skills login refresh",
+          run: () => void reloadChat(sessionId),
         },
       );
       if (selectedWorktree)
@@ -2183,9 +2275,12 @@ function App() {
               )}
             </div>
           )}
-          <div aria-hidden className="title-drag fixed inset-x-0 top-0 z-50 h-10" />
+          <div aria-hidden className="title-drag fixed inset-x-0 top-0 z-50 h-[var(--window-chrome-height)]" />
           {changesAvailable && <ChangesToggle open={changes.open} onToggle={changes.toggle} />}
           <PanelToggles right={changesAvailable ? 12 + CORNER_PITCH : 12} />
+          {view === "chat" && (
+            <LayoutToggle grid={layout === "grid"} offset={(changesAvailable ? 1 : 0) + sidePanelCount(sidePanels)} onToggle={toggleLayout} />
+          )}
           {showAttentionButton && !floatingInbox && attentionChats[0] && (
             <AttentionButton
               label={attentionLabel(attentionPaths.map(projectName))}
@@ -2194,7 +2289,7 @@ function App() {
                 asking: !agentRuns.runs[item.key]?.approvals.length,
                 waitingFor: waitingFor(agentRuns.runs[item.key]),
               }))}
-              offset={(changesAvailable ? 1 : 0) + sidePanelCount(sidePanels)}
+              offset={(changesAvailable ? 1 : 0) + sidePanelCount(sidePanels) + (view === "chat" ? 1 : 0)}
               onOpen={openChatByKey}
             />
           )}
@@ -2204,7 +2299,7 @@ function App() {
               if (event.animationName === "app-enter-main") setAppEntered(true);
             }}
           >
-            <div className={`min-h-0 shrink-0 pt-[60px] pb-3 pl-3 ${view === "chat" || view === "canvas" ? "flex" : "hidden"}`}>
+            <div className={`min-h-0 shrink-0 pt-[var(--window-chrome-height)] pb-3 pl-3 ${view === "chat" || view === "canvas" ? "flex" : "hidden"}`}>
               <SidebarNav
                 fill
                 workspaceName={project.name}
@@ -2297,6 +2392,10 @@ function App() {
                   runs={agentRuns.runs}
                   linkedWork={linkedWork}
                   onOpenChat={(path, id) => void openCanvasChat(path, id)}
+                  onNewChat={(path) => {
+                    setView("chat");
+                    newChatInScope(path);
+                  }}
                   onBack={() => setView("chat")}
                 />
               )}
@@ -2309,139 +2408,158 @@ function App() {
                 {awayBanner && (
                   <OfflineBanner text={awayBanner} empty={Boolean(lean && selectedSession && !chatWindow.loading && chatWindow.messages.length === 0)} />
                 )}
-                <EditorLinks
-                  root={isRemoteKey(project.path) ? "" : (selectedWorktree?.path ?? project.path)}
-                  files={selectedWorktree?.path ?? (isRemoteKey(project.path) ? "" : project.path)}
+                <ChatGrid
+                  keys={shownTiles}
+                  focused={focusedChatKey}
+                  states={gridStates}
+                  runs={agentRuns.runs}
+                  delegated={delegatedKeys}
+                  models={models}
+                  onFocus={openLinkedChat}
+                  onDismiss={(key) =>
+                    void reportChatAction(
+                      bridgeForKey(projectOfKey(key)).patchChat(projectOfKey(key), sessionIdFromKey(key), { unread: false }),
+                      "Could not mark Chat read",
+                      setNotice,
+                    )
+                  }
                 >
-                  <DraftChatComposer
-                    key={project.path}
-                    store={draftStore}
-                    messages={displayedMessages}
-                    scrollKey={chatView.current}
-                    pendingMessageId={pendingHere && pendingCanonicalId === null ? pendingSend?.message.id : undefined}
-                    imageDraft={imageDraft}
-                    projectPath={selectedWorktree?.path ?? project.path}
-                    messageScope={project.path}
-                    earlier={earlierMessages}
-                    onSend={() => void sendMessage()}
-                    onCompact={selectedSession && (selectedSession.provider ?? "claude") === "claude" && !readOnly ? () => void compactContext() : undefined}
-                    onSendDesignMessage={(text) => executeSend(text, permissionMode, [], [], true)}
-                    linearActive={linear.active}
-                    onStartFromIssue={startFromIssue}
-                    onStop={run && selectedSession ? () => void agentRuns.interrupt(chatKey(project.path, selectedSession.id)) : undefined}
-                    pullRequestAction={
-                      selectedSession && selectedPullRequest && pullRequestBlocker && pullRequestActionRequest
-                        ? {
-                            label: BLOCKERS[pullRequestBlocker].action,
-                            tone: BLOCKERS[pullRequestBlocker].tone,
-                            onRun: () => {
-                              dismissBlockerAction(selectedPullRequest, pullRequestBlocker);
-                              void executeSend(pullRequestActionBody(pullRequestActionRequest), permissionMode, [], [], true, pullRequestActionRequest);
-                            },
-                          }
-                        : undefined
-                    }
-                    isSending={isSending}
-                    sendBlocked={preparing || readOnly}
-                    offlineName={readOnly ? (openComputer?.name ?? "That computer") : null}
-                    runStartedAt={run?.startedAt ?? (pendingHere ? pendingSend?.startedAt : undefined)}
-                    streamingText={run?.text}
-                    streamingSteps={run?.steps}
-                    subagents={subagents}
-                    onArchiveFinishedSubagents={archiveFinishedChildren}
-                    onArchiveSubagent={archiveChild}
-                    onStopAdvisor={(id) => controlAdvisor("stop", id)}
-                    onRetryAdvisor={(id) => controlAdvisor("retry", id)}
-                    waitingForSubagents={run?.waitingForSubagents}
-                    tasks={run?.tasks}
-                    contextUsage={run?.contextUsage ?? selectedSession?.contextUsage}
-                    ports={project && selectedSession ? agentPorts[chatKey(project.path, selectedSession.id)] : undefined}
-                    agentChatId={project && selectedSession ? chatKey(project.path, selectedSession.id) : undefined}
-                    onStopPort={
-                      project && selectedSession ? (pid) => bridgeForKey(project.path).stopAgentPort(chatKey(project.path, selectedSession.id), pid) : undefined
-                    }
-                    waitingStepIds={waitingStepIds}
-                    asking={Boolean(run?.questions.length)}
-                    sessionProvider={selectedSession?.provider}
-                    runModelName={run ? (models.find((model) => model.id === run.model)?.name ?? run.model) : undefined}
-                    resume={
-                      project && selectedSession?.resumeTurn
-                        ? {
-                            onContinue: () =>
-                              void bridgeForKey(project.path)
-                                .resumeChat(project.path, selectedSession.id)
-                                .catch((error) => setNotice(`Couldn't continue the chat: ${error instanceof Error ? error.message : String(error)}`)),
-                          }
-                        : undefined
-                    }
-                    onOpenLinkedChat={openLinkedChat}
-                    onOpenAccounts={openAccounts}
-                    models={models}
-                    cliStatus={cliStatus}
-                    onModelPickerOpen={refreshCliStatus}
-                    onUpdateCli={handleUpdateCli}
-                    updatingCli={updatingCli}
-                    selectedModel={selectedModel}
-                    onModelChange={chooseModel}
-                    capability={selectedCapability}
-                    effort={effortFor(selectedCapability, effort)}
-                    onEffortChange={setEffort}
-                    ultracode={selectedCapability.ultracode && ultracode}
-                    onUltracodeChange={setUltracode}
-                    fastMode={fastMode}
-                    onFastModeChange={setFastMode}
-                    permissionMode={permissionMode}
-                    onPermissionModeChange={changePermissionMode}
-                    onRecommendationSelect={sendRecommendation}
-                    worktrees={composerWorktrees}
-                    selectedWorktreeId={selectedWorktree?.id}
-                    onWorktreeChange={(id) => {
-                      advanceChatView();
-                      setSelectedWorktreeId(id);
-                      saveChatPreferences(localStorage, project.path, { worktreePath: state.worktrees[id]?.path });
-                    }}
-                    isolation={isolation}
-                    onIsolationChange={(next) => {
-                      preparedTarget.current = null;
-                      setIsolation(next);
-                      saveChatPreferences(localStorage, project.path, { isolation: next });
-                      setNewChatError(null);
-                    }}
-                    branches={branches}
-                    baseBranch={effectiveBaseBranch}
-                    onBaseBranchChange={(branch) => {
-                      preparedTarget.current = null;
-                      setBaseBranch(branch);
-                      saveChatPreferences(localStorage, project.path, { baseBranch: branch });
-                    }}
-                    newChatError={newChatError}
-                    findOpen={findOpen}
-                    findSignal={findSignal}
-                    findSeed={findSeed}
-                    onFindClose={() => setFindOpen(false)}
-                    notice={notice}
-                    onDismissNotice={() => setNotice(null)}
-                    approval={
-                      pendingApproval ? (
-                        <PermissionCard
-                          key={`${chatKey(project.path, selectedSession?.id ?? 0)}:${pendingApproval.requestId}`}
-                          request={pendingApproval}
-                          waiting={(run?.approvals.length ?? 1) - 1}
-                          answering={sentDecision(run, pendingApproval.requestId)}
-                          onAnswer={answerApproval}
-                        />
-                      ) : pendingQuestion ? (
-                        <QuestionCard
-                          key={`${chatKey(project.path, selectedSession?.id ?? 0)}:${pendingQuestion.requestId}`}
-                          request={pendingQuestion}
-                          waiting={(run?.questions.length ?? 1) - 1}
-                          answering={sentReply(run, pendingQuestion.requestId)}
-                          onAnswer={answerQuestion}
-                        />
-                      ) : undefined
-                    }
-                  />
-                </EditorLinks>
+                  <EditorLinks
+                    root={isRemoteKey(project.path) ? "" : (selectedWorktree?.path ?? project.path)}
+                    files={selectedWorktree?.path ?? (isRemoteKey(project.path) ? "" : project.path)}
+                  >
+                    <DraftChatComposer
+                      key={project.path}
+                      store={draftStore}
+                      messages={displayedMessages}
+                      scrollKey={chatView.current}
+                      pendingMessageId={pendingHere && pendingCanonicalId === null ? pendingSend?.message.id : undefined}
+                      imageDraft={imageDraft}
+                      projectPath={selectedWorktree?.path ?? project.path}
+                      messageScope={project.path}
+                      earlier={earlierMessages}
+                      onSend={() => void sendMessage()}
+                      onCompact={selectedSession && (selectedSession.provider ?? "claude") === "claude" && !readOnly ? () => void compactContext() : undefined}
+                      onSendDesignMessage={(text) => executeSend(text, permissionMode, [], [], true)}
+                      linearActive={linear.active}
+                      onStartFromIssue={startFromIssue}
+                      onStop={run && selectedSession ? () => void agentRuns.interrupt(chatKey(project.path, selectedSession.id)) : undefined}
+                      pullRequestAction={
+                        selectedSession && pullRequestBlockerAction && pullRequestActionRequest
+                          ? {
+                              label: BLOCKERS[pullRequestBlockerAction.blocker].action,
+                              tone: BLOCKERS[pullRequestBlockerAction.blocker].tone,
+                              onRun: () => {
+                                dismissBlockerAction(pullRequestBlockerAction.pr, pullRequestBlockerAction.blocker);
+                                void executeSend(pullRequestActionBody(pullRequestActionRequest), permissionMode, [], [], true, pullRequestActionRequest);
+                              },
+                            }
+                          : undefined
+                      }
+                      isSending={isSending}
+                      sendBlocked={preparing || readOnly}
+                      offlineName={readOnly ? (openComputer?.name ?? "That computer") : null}
+                      runStartedAt={run?.startedAt ?? (pendingHere ? pendingSend?.startedAt : undefined)}
+                      streamingText={run?.text}
+                      streamingSteps={run?.steps}
+                      subagents={subagents}
+                      onArchiveFinishedSubagents={archiveFinishedChildren}
+                      onArchiveSubagent={archiveChild}
+                      onStopAdvisor={(id) => controlAdvisor("stop", id)}
+                      onRetryAdvisor={(id) => controlAdvisor("retry", id)}
+                      waitingForSubagents={run?.waitingForSubagents}
+                      plan={selectedSession?.plan}
+                      contextUsage={run?.contextUsage ?? selectedSession?.contextUsage}
+                      ports={project && selectedSession ? agentPorts[chatKey(project.path, selectedSession.id)] : undefined}
+                      agentChatId={project && selectedSession ? chatKey(project.path, selectedSession.id) : undefined}
+                      onStopPort={
+                        project && selectedSession
+                          ? (pid) => bridgeForKey(project.path).stopAgentPort(chatKey(project.path, selectedSession.id), pid)
+                          : undefined
+                      }
+                      waitingStepIds={waitingStepIds}
+                      asking={Boolean(run?.questions.length)}
+                      sessionProvider={selectedSession?.provider}
+                      runModelName={run ? (models.find((model) => model.id === run.model)?.name ?? run.model) : undefined}
+                      resume={
+                        project && selectedSession?.resumeTurn
+                          ? {
+                              onContinue: () =>
+                                void bridgeForKey(project.path)
+                                  .resumeChat(project.path, selectedSession.id)
+                                  .catch((error) => setNotice(`Couldn't continue the chat: ${error instanceof Error ? error.message : String(error)}`)),
+                            }
+                          : undefined
+                      }
+                      onOpenLinkedChat={openLinkedChat}
+                      onOpenAccounts={openAccounts}
+                      models={models}
+                      cliStatus={cliStatus}
+                      onModelPickerOpen={refreshCliStatus}
+                      onUpdateCli={handleUpdateCli}
+                      updatingCli={updatingCli}
+                      selectedModel={selectedModel}
+                      onModelChange={chooseModel}
+                      capability={selectedCapability}
+                      effort={effortFor(selectedCapability, effort)}
+                      onEffortChange={setEffort}
+                      ultracode={selectedCapability.ultracode && ultracode}
+                      onUltracodeChange={setUltracode}
+                      fastMode={fastMode}
+                      onFastModeChange={setFastMode}
+                      permissionMode={permissionMode}
+                      onPermissionModeChange={changePermissionMode}
+                      onRecommendationSelect={sendRecommendation}
+                      worktrees={composerWorktrees}
+                      selectedWorktreeId={selectedWorktree?.id}
+                      onWorktreeChange={(id) => {
+                        advanceChatView();
+                        setSelectedWorktreeId(id);
+                        saveChatPreferences(localStorage, project.path, { worktreePath: state.worktrees[id]?.path });
+                      }}
+                      isolation={isolation}
+                      onIsolationChange={(next) => {
+                        preparedTarget.current = null;
+                        setIsolation(next);
+                        saveChatPreferences(localStorage, project.path, { isolation: next });
+                        setNewChatError(null);
+                      }}
+                      branches={branches}
+                      baseBranch={effectiveBaseBranch}
+                      onBaseBranchChange={(branch) => {
+                        preparedTarget.current = null;
+                        setBaseBranch(branch);
+                        saveChatPreferences(localStorage, project.path, { baseBranch: branch });
+                      }}
+                      newChatError={newChatError}
+                      findOpen={findOpen}
+                      findSignal={findSignal}
+                      findSeed={findSeed}
+                      onFindClose={() => setFindOpen(false)}
+                      notice={notice}
+                      onDismissNotice={() => setNotice(null)}
+                      approval={
+                        pendingApproval ? (
+                          <PermissionCard
+                            key={`${chatKey(project.path, selectedSession?.id ?? 0)}:${pendingApproval.requestId}`}
+                            request={pendingApproval}
+                            waiting={(run?.approvals.length ?? 1) - 1}
+                            answering={sentDecision(run, pendingApproval.requestId)}
+                            onAnswer={answerApproval}
+                          />
+                        ) : pendingQuestion ? (
+                          <QuestionCard
+                            key={`${chatKey(project.path, selectedSession?.id ?? 0)}:${pendingQuestion.requestId}`}
+                            request={pendingQuestion}
+                            waiting={(run?.questions.length ?? 1) - 1}
+                            answering={sentReply(run, pendingQuestion.requestId)}
+                            onAnswer={answerQuestion}
+                          />
+                        ) : undefined
+                      }
+                    />
+                  </EditorLinks>
+                </ChatGrid>
                 <TerminalPanel chatId={terminalChatId} notify={setNotice} />
               </div>
             </main>

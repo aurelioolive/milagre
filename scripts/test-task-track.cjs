@@ -19,16 +19,19 @@ function Fixture() {
     {id:"tests",title:"Run tests",status:"failed",startedAt:Date.now()-40000,updatedAt:Date.now(),endedAt:Date.now(),transcript:[{id:"b",kind:"tool",text:"Tests failed"}]}
   ]);
   const [sending, setSending] = useState(true);
-  const [tasks, setTasks] = useState([
-    {id:"0",content:"Read the composer",status:"completed"},
-    {id:"1",content:"Add the task pill",activeForm:"Adding the task pill",status:"in_progress"},
-    {id:"2",content:"Write tests",status:"pending"},
-    {id:"3",content:"Run the build",status:"pending"},
-    {id:"4",content:"Take screenshots",status:"pending"},
-    {id:"5",content:"Fix the A very long task name that has to wrap onto a second line because the popover is narrow",status:"completed"},
-    {id:"6",content:"Commit",status:"pending"}
-  ]);
-  window.setTasks = setTasks;
+  const [plan, setPlan] = useState({ source: "milagre", updatedAt: 0, tasks: [
+    {id:"1",title:"Persist wishlist items",activeForm:"Persisting wishlist items",status:"in_progress",children:[
+      {id:"1.1",title:"Save wishlist changes on this device",activeForm:"Saving wishlist changes",status:"in_progress"},
+      {id:"1.2",title:"Restore the wishlist on startup",status:"completed"}]},
+    {id:"2",title:"Verify wishlist persistence",status:"completed",children:[
+      {id:"2.1",title:"Verify items survive a browser restart",status:"completed",children:[
+        {id:"2.1.1",title:"Chrome",status:"completed"}]},
+      {id:"2.2",title:"Verify removed items stay removed",status:"completed"}]},
+    {id:"3",title:"Prepare the wishlist evidence for review",status:"pending"}],
+    phases: [
+      {phase:"start",at:Date.now()-5*3600e3},{phase:"plan",at:Date.now()-4.8*3600e3},{phase:"build",at:Date.now()-4.5*3600e3},
+      {phase:"test",at:Date.now()-4.2*3600e3},{phase:"review",at:Date.now()-1*3600e3}] });
+  window.setPlan = setPlan;
   window.setDark = (dark) => document.documentElement.classList.toggle("dark", dark);
   const archive = (id,archived) => setChildren(items=>items.map(child=>child.id===id ? {...child,archived} : child));
   const archiveFinished = () => setChildren(items=>items.map(child=>["completed","failed","cancelled"].includes(child.status) ? {...child,archived:true} : child));
@@ -52,7 +55,7 @@ function Fixture() {
   return <div style={{ height: "100%", padding: 12 }}>
     <ChatComposer messages={[...messages, ...extra]} onCompact={() => window.compacted.push(Date.now())}
       imageDraft={{ images: [], files: [], attachFiles: noop, attachPath: noop, removeFile: noop, loading: false, error: "", onPaste: noop, clear: noop, remove: noop }}
-      projectPath="/fixture" draft={draft} onDraftChange={setDraft} onSend={noop} isSending={sending} sendBlocked={false} tasks={tasks} contextUsage={usage} streamingText="" streamingSteps={[{ id: "c-1", kind: "other", title: "Compacting context", status: "running", offset: 0 }]} subagents={children} onArchiveFinishedSubagents={archiveFinished} onArchiveSubagent={archive} waitingForSubagents={true}
+      projectPath="/fixture" draft={draft} onDraftChange={setDraft} onSend={noop} isSending={sending} sendBlocked={false} plan={plan} contextUsage={usage} streamingText="" streamingSteps={[{ id: "c-1", kind: "other", title: "Compacting context", status: "running", offset: 0 }]} subagents={children} onArchiveFinishedSubagents={archiveFinished} onArchiveSubagent={archive} waitingForSubagents={true}
       models={MODEL_CATALOG} cliStatus={null} onModelPickerOpen={noop} selectedModel={model} onModelChange={noop}
       capability={capabilityFor(model, null)} onEffortChange={noop} ultracode={false} onUltracodeChange={noop}
       fastMode={fastMode} onFastModeChange={setFastMode} permissionMode="auto" onPermissionModeChange={noop}
@@ -96,11 +99,115 @@ async function browserChecks() {
     }
     throw new Error(`Timed out: ${source}`);
   }
-  const pill = "[data-slot=task-track] > span > button";
+  const pill = "[data-slot=task-track] [data-face=pill] button";
+  // The pill and its panel are two faces of one surface; both stay mounted and only the shown one is live.
+  const surface = "[data-slot=task-surface]";
+  const panel = "[data-slot=task-popover]";
+  const isOpen = `document.querySelector("${panel}")?.dataset.state === "open"`;
+  const isClosed = `document.querySelector("${panel}")?.dataset.state === "closed"`;
+  const assertFaces = async (open) => {
+    const faces = await evaluate(
+      `(() => {const p=document.querySelector("[data-slot=task-track] [data-face=pill]"), c=document.querySelector("${panel}");return {pill:[p.inert,p.getAttribute("aria-hidden")], panel:[c.inert,c.getAttribute("aria-hidden")]}})()`,
+    );
+    assert.deepEqual(
+      faces,
+      open ? { pill: [true, "true"], panel: [false, null] } : { pill: [false, null], panel: [true, "true"] },
+      `Faces (${open ? "open" : "closed"})`,
+    );
+  };
+  // The surface has stopped moving and takes the size of the face on show.
+  const settle = () =>
+    waitFor(
+      `(() => {const s=document.querySelector("${surface}"), open=${isOpen}, face=open ? document.querySelector("${panel}") : document.querySelector("[data-slot=task-track] [data-face=pill]"), r=s.getBoundingClientRect();return !s.getAnimations().length && Math.abs(r.width-face.offsetWidth)<1 && Math.abs(r.height-face.offsetHeight)<1})()`,
+    );
+  const rect = (selector) =>
+    evaluate(
+      `(() => {const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}})()`,
+    );
+  // The open surface grows up and to the left from the pill: its bottom-right corner stays on the pill's, unless the
+  // panel would cross the window's 12px left padding; then it moves right just enough, never past innerWidth - 12.
+  const assertGrownFromPill = async (pillBox, when) => {
+    const box = await rect(surface);
+    const content = await evaluate(`(() => {const c=document.querySelector("${panel}");return {width:c.offsetWidth,height:c.offsetHeight,w:innerWidth}})()`);
+    const right = Math.max(pillBox.right, 12 + box.width);
+    assert.ok(
+      Math.abs(box.right - right) <= 1 && Math.abs(box.bottom - pillBox.bottom) <= 1,
+      `Surface left the pill's corner (${when}): ${JSON.stringify({ box, pillBox })}`,
+    );
+    assert.ok(box.left >= 11 && box.right <= content.w - 11, `Surface crosses the window's padding (${when}): ${JSON.stringify(box)}`);
+    assert.ok(
+      Math.abs(box.width - content.width) <= 1 && Math.abs(box.height - content.height) <= 1,
+      `Surface does not fit its panel (${when}): ${JSON.stringify({ box, content })}`,
+    );
+    assert.ok(box.width <= 380 && box.height > pillBox.height, `Surface did not open (${when}): ${JSON.stringify(box)}`);
+  };
+  // The surface overlays the transcript: opening it never moves the composer row's other controls.
+  const rowControls = () =>
+    evaluate(
+      `["[data-slot=subagent-track] [data-face=pill] button","button[aria-label=Send]"].map(s=>{const r=document.querySelector(s).getBoundingClientRect();return [r.left,r.top,r.width,r.height]})`,
+    );
+  const assertRowStill = (before, after, when) =>
+    assert.ok(
+      before.every((box, index) => box.every((value, axis) => Math.abs(value - after[index][axis]) <= 0.5)),
+      `The composer row moved when the panel opened (${when}): ${JSON.stringify({ before, after })}`,
+    );
+  // Clicks the pill and reads the surface's target once React has committed (a microtask), before any frame or
+  // ResizeObserver callback: it must already be the panel's box.
+  const openAndReadTarget = () =>
+    evaluate(
+      `(async () => {document.querySelector("${pill}").click();for (let i=0;i<3;i++) await Promise.resolve();const s=document.querySelector("${surface}").style, c=document.querySelector("${panel}");return {width:parseFloat(s.width),height:parseFloat(s.height),panelWidth:c.offsetWidth,panelHeight:c.offsetHeight}})()`,
+    );
+  const assertTargetsPanel = (target, when) =>
+    assert.ok(
+      Math.abs(target.width - target.panelWidth) <= 1 && Math.abs(target.height - target.panelHeight) <= 1,
+      `The first frame aims at a stale box (${when}): ${JSON.stringify(target)}`,
+    );
+  // A short frame sequence of the morph, for the PR: Electron's frame subscription paints ~30fps even in a hidden window.
+  async function record(name, run) {
+    if (!screenshotDir) return run();
+    const fs = require("node:fs");
+    const frames = [];
+    window.webContents.beginFrameSubscription(false, (image) => frames.push({ at: Date.now(), image }));
+    try {
+      await run();
+    } finally {
+      window.webContents.endFrameSubscription();
+    }
+    const dir = path.join(screenshotDir, name);
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const list = [];
+    frames.forEach((frame, index) => {
+      const file = `${String(index).padStart(4, "0")}.png`;
+      fs.writeFileSync(path.join(dir, file), frame.image.toPNG());
+      list.push(`file '${file}'`, `duration ${(((frames[index + 1]?.at ?? frame.at + 33) - frame.at) / 1000).toFixed(3)}`);
+    });
+    fs.writeFileSync(path.join(dir, "frames.txt"), list.join("\n") + "\n");
+  }
+  const assertDotOnRow = async () => {
+    const offset = await evaluate(
+      `(() => {const c=[...document.querySelectorAll("[data-slot=phase-graph] circle")].at(-1).getBoundingClientRect(), l=document.querySelector("[data-slot=phase-graph] [data-current-phase]").getBoundingClientRect();return Math.abs((c.top+c.bottom)/2-(l.top+l.bottom)/2)})()`,
+    );
+    assert.ok(offset <= 2, `Phase dot is ${offset}px off its row label`);
+  };
+  // Every dot, tick label and "Now" sits fully inside the graph's SVG: iOS draws nothing outside it.
+  const assertGraphInsideBox = async (when) => {
+    const outside = await evaluate(
+      `(() => {const svg=document.querySelector("[data-slot=phase-graph] svg[role=img]").getBoundingClientRect();return [...document.querySelectorAll("[data-slot=phase-graph] circle, [data-slot=phase-graph] text")].filter(e=>{const r=e.getBoundingClientRect();return r.left<svg.left-0.5||r.right>svg.right+0.5||r.top<svg.top-0.5||r.bottom>svg.bottom+0.5}).map(e=>{const r=e.getBoundingClientRect();return e.tagName+":"+e.textContent+":"+[r.left,r.right,r.top,r.bottom,svg.left,svg.right,svg.top,svg.bottom].map(Math.round)})})()`,
+    );
+    assert.deepEqual(outside, [], `Phase graph leaves its box (${when})`);
+    assert.ok(await evaluate('[...document.querySelectorAll("[data-slot=phase-graph] text")].some(e=>e.textContent==="Now")'), `No "Now" label (${when})`);
+    assert.ok(await evaluate('document.querySelectorAll("[data-slot=phase-graph] circle").length>=2'), `Dots missing (${when})`);
+    // Every gap chip sits on the line: its centre is within 1.5 px of the path.
+    const chip = await evaluate(
+      `(() => {const path=document.querySelector("[data-slot=phase-graph] svg[role=img] path"), len=path.getTotalLength();return [...document.querySelectorAll("[data-slot=phase-graph] [data-gap] rect")].map(r=>{const cx=r.x.baseVal.value+r.width.baseVal.value/2, cy=r.y.baseVal.value+r.height.baseVal.value/2;let best=Infinity;for(let i=0;i<=len;i+=0.5){const p=path.getPointAtLength(i);best=Math.min(best,Math.hypot(p.x-cx,p.y-cy))}return best})})()`,
+    );
+    assert.ok(chip.length >= 2 && chip.every((distance) => distance <= 1.5), `Gap chip is off the line (${when}): ${JSON.stringify(chip)}`);
+  };
   try {
     await window.loadURL(process.argv[2]);
     await waitFor('!!document.querySelector("[data-slot=task-track]")');
-    assert.equal(await evaluate(`document.querySelector("${pill}").textContent`), "2/7");
+    assert.equal(await evaluate(`document.querySelector("${pill}").textContent`), "3/5");
     // The context ring sits beside Send, on the same row.
     const ring = "button[aria-label^=Context]";
     assert.equal(await evaluate(`document.querySelector("${ring}").getAttribute("aria-label")`), "Context: 37% used (366k of 1M tokens)");
@@ -207,59 +314,148 @@ async function browserChecks() {
     assert.ok(await evaluate(`document.querySelector("${pill}").getBoundingClientRect().height <= 24`));
     // The pill sits right next to Subagents, on the same row.
     const gap = await evaluate(
-      `(() => {const a=document.querySelector("${pill}").getBoundingClientRect(), b=document.querySelector("[data-slot=subagent-track] > button").getBoundingClientRect();return {gap:b.left-a.right,dy:Math.abs(a.top-b.top)}})()`,
+      `(() => {const a=document.querySelector("${pill}").getBoundingClientRect(), b=document.querySelector("[data-slot=subagent-track] [data-face=pill] button").getBoundingClientRect();return {gap:b.left-a.right,dy:Math.abs(a.top-b.top)}})()`,
     );
     assert.ok(gap.gap >= 0 && gap.gap <= 12 && gap.dy < 1, `Pill is not beside Subagents: ${JSON.stringify(gap)}`);
+    // Closed, the panel face is mounted but out of reach.
+    await assertFaces(false);
     for (const theme of ["dark", "light"]) {
       await evaluate(`window.setDark(${theme === "dark"})`);
       await screenshot(`task-pill-closed-${theme}`);
+      const pillBox = await rect(pill);
+      if (theme === "dark") {
+        // The recording covers open and close: the pill grows into the panel and shrinks back.
+        await record("task-morph", async () => {
+          await delay(150);
+          await evaluate(`document.querySelector("${pill}").click()`);
+          await waitFor(isOpen);
+          await settle();
+          await delay(400);
+          await clickLabel("Collapse tasks");
+          await waitFor(isClosed);
+          await settle();
+          await delay(250);
+        });
+        assert.equal(await evaluate(`document.activeElement === document.querySelector("${pill}")`), true, "The collapse control returns focus to the pill");
+      }
+      const rowBefore = await rowControls();
       await evaluate(`document.querySelector("${pill}").click()`);
-      await waitFor('!!document.querySelector("[data-slot=task-popover]")');
+      await waitFor(isOpen);
+      await assertFaces(true);
+      await settle();
+      await assertGrownFromPill(pillBox, theme);
+      if (theme === "dark") assertRowStill(rowBefore, await rowControls(), theme);
       assert.equal(await evaluate(`document.querySelector("${pill}").getAttribute("aria-expanded")`), "true");
       assert.equal(await evaluate('document.querySelectorAll("dialog[open], [aria-modal=true]").length'), 0);
-      assert.equal(await evaluate('document.querySelectorAll("[data-task-row]").length'), 7);
-      assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-task-row]")].slice(0,3).map(row => row.dataset.status + ":" + row.textContent)'), [
-        "completed:Completed: Read the composer",
-        "in_progress:In progress: Adding the task pill",
-        "pending:Pending: Write tests",
-      ]);
-      assert.equal(await evaluate('document.querySelectorAll("[data-task-row][data-status=in_progress] svg").length'), 1);
+      assert.equal(await evaluate('document.querySelectorAll("[data-task-row]").length'), 8);
+      assert.deepEqual(
+        await evaluate('[...document.querySelectorAll("[data-task-row]")].slice(0,2).map(row => row.dataset.depth + ":" + row.dataset.status)'),
+        ["0:in_progress", "1:in_progress"],
+      );
+      assert.match(await evaluate('document.querySelector("[data-task-row][data-depth=\\"1\\"]").textContent'), /Saving wishlist changes/);
+      // Only the in-progress leaf shows its activeForm; its parent keeps the title.
+      const parentRow = await evaluate('document.querySelector("[data-task-row][data-depth=\\"0\\"]").textContent');
+      assert.match(parentRow, /Persist wishlist items/);
+      assert.doesNotMatch(parentRow, /Persisting/);
+      assert.ok(await evaluate('!!document.querySelector("[data-slot=phase-graph] path")'));
+      assert.equal(await evaluate('document.querySelector("[data-slot=phase-graph] [data-current-phase]").textContent'), "Review");
+      assert.match(await evaluate('document.querySelector("[data-slot=phase-graph] [data-gap]").textContent'), /^3h$/);
+      // Every dot sits on its legend row: the current phase's dot is level with its label.
+      await assertDotOnRow();
+      await assertGraphInsideBox(theme);
+      // Collapsing a parent hides its children.
+      await evaluate('document.querySelector("[data-task-row] button[aria-expanded]").click()');
+      assert.equal(await evaluate('document.querySelectorAll("[data-task-row]").length'), 6);
+      await evaluate('document.querySelector("[data-task-row] button[aria-expanded]").click()');
+      assert.equal(await evaluate('document.querySelectorAll("[data-task-row]").length'), 8);
       const bounds = await evaluate(
-        '(() => {const r=document.querySelector("[data-slot=task-popover]").getBoundingClientRect(), t=document.querySelector("[data-slot=task-track] button").getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight,gap:t.top-r.bottom}})()',
+        `(() => {const r=document.querySelector("${panel}").getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight}})()`,
       );
-      assert.ok(
-        bounds.left >= 0 && bounds.right <= bounds.w && bounds.top >= 0 && bounds.gap >= 0 && bounds.gap < 16,
-        `Popover is misplaced: ${JSON.stringify(bounds)}`,
-      );
+      assert.ok(bounds.left >= 0 && bounds.right <= bounds.w && bounds.top >= 0, `Popover is misplaced: ${JSON.stringify(bounds)}`);
       await screenshot(`task-popover-${theme}`);
       window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
       window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
-      await waitFor('!document.querySelector("[data-slot=task-popover]")');
+      await waitFor(isClosed);
       assert.equal(await evaluate(`document.activeElement === document.querySelector("${pill}")`), true);
+      await assertFaces(false);
+      await settle();
     }
     await evaluate(`document.querySelector("${pill}").click()`);
-    await waitFor('!!document.querySelector("[data-slot=task-popover]")');
+    await waitFor(isOpen);
     await evaluate('document.querySelector("textarea[aria-label=Prompt]").dispatchEvent(new PointerEvent("pointerdown",{bubbles:true}))');
-    await waitFor('!document.querySelector("[data-slot=task-popover]")');
-    window.setContentSize(390, 500);
-    await delay(200);
+    await waitFor(isClosed);
+    await settle();
+    // Reduced motion: the surface jumps straight to the panel, with no transition.
+    const devtools = window.webContents.debugger;
+    devtools.attach("1.3");
+    await devtools.sendCommand("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    assert.equal(await evaluate('matchMedia("(prefers-reduced-motion: reduce)").matches'), true);
     await evaluate(`document.querySelector("${pill}").click()`);
-    await waitFor('!!document.querySelector("[data-slot=task-popover]")');
+    await waitFor(isOpen);
+    // styles.css's global reduced-motion rule turns every transition into 0.01ms, which is no transition.
+    const durations = await evaluate(`getComputedStyle(document.querySelector("${surface}")).transitionDuration.split(", ").map(parseFloat)`);
+    assert.ok(
+      durations.every((seconds) => seconds <= 0.00001),
+      `The surface still transitions under reduced motion: ${durations}`,
+    );
     assert.ok(
       await evaluate(
-        '(() => {const r=document.querySelector("[data-slot=task-popover]").getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.top>=0})()',
+        `new Promise(done => requestAnimationFrame(() => requestAnimationFrame(() => {const s=document.querySelector("${surface}").getBoundingClientRect(), c=document.querySelector("${panel}");done(Math.abs(s.width-c.offsetWidth)<1 && Math.abs(s.height-c.offsetHeight)<1)})))`,
       ),
+      "The surface did not open at once under reduced motion",
+    );
+    window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+    await waitFor(isClosed);
+    await devtools.sendCommand("Emulation.setEmulatedMedia", { features: [] });
+    devtools.detach();
+    await settle();
+    window.setContentSize(390, 500);
+    await delay(200);
+    const narrowPill = await rect(pill);
+    const narrowRow = await rowControls();
+    // Here the panel also moves right of the pill to keep the window's padding; the recording shows it. The window
+    // shrank while the panel was closed, so its room changes at this click: the first frame must still aim right.
+    let narrowTarget;
+    await record("task-morph-narrow", async () => {
+      await delay(150);
+      narrowTarget = await openAndReadTarget();
+      await waitFor(isOpen);
+      await settle();
+      await delay(250);
+    });
+    assertTargetsPanel(narrowTarget, "narrow");
+    await assertGrownFromPill(narrowPill, "narrow");
+    assertRowStill(narrowRow, await rowControls(), "narrow");
+    assert.ok(
+      await evaluate(`(() => {const r=document.querySelector("${panel}").getBoundingClientRect();return r.left>=12 && r.right<=innerWidth-12 && r.top>=0})()`),
       "Popover escapes the narrow viewport",
     );
+    // A narrow window takes the full width less its padding, rather than squeezing left of the pill.
+    const narrowWidth = (await rect(panel)).width;
+    assert.ok(narrowWidth >= 360, `Narrow panel is ${narrowWidth}px wide`);
+    // The tree and the graph scroll as one body, so the tree keeps room: at least four rows show unscrolled.
+    const visibleRows = await evaluate(
+      `(() => {const b=document.querySelector("[data-slot=task-body]");b.scrollTop=0;const r=b.getBoundingClientRect();return [...b.querySelectorAll("[data-task-row]")].filter(e=>{const x=e.getBoundingClientRect();return x.top>=r.top-0.5 && x.bottom<=r.bottom+0.5}).length})()`,
+    );
+    assert.ok(visibleRows >= 4, `Only ${visibleRows} task rows show in the narrow window`);
+    assert.ok(
+      await evaluate(
+        `(() => {const b=document.querySelector("[data-slot=task-body]");return b.contains(document.querySelector("[data-slot=phase-graph]")) && !b.contains(document.querySelector("button[aria-label='Collapse tasks']"))})()`,
+      ),
+      "The graph scrolls with the tree under a fixed header",
+    );
+    await assertDotOnRow();
+    await assertGraphInsideBox("narrow");
     await screenshot("task-popover-narrow");
     window.setContentSize(800, 600);
-    await evaluate('window.setTasks(items => items.map(task => ({...task, status: "completed"})))');
-    await waitFor(`document.querySelector("${pill}").textContent === "7/7"`);
-    await evaluate("window.setTasks([])");
+    await evaluate("window.setPlan(p => ({...p, tasks: []}))");
+    await waitFor(`document.querySelector("${pill}").textContent === "Review"`);
+    await evaluate("window.setPlan(undefined)");
     await waitFor('!document.querySelector("[data-slot=task-track]") && !document.querySelector("[data-slot=task-popover]")');
-    assert.ok(await evaluate('!!document.querySelector("[data-slot=subagent-track] > button")'));
+    assert.ok(await evaluate('!!document.querySelector("[data-slot=subagent-track] [data-face=pill] button")'));
     console.log(
-      "PASS: pill label, placement beside Subagents, rows and statuses, light and dark, Escape and outside click, focus return, narrow layout, hidden when empty, context card tones and Compact now, compaction divider",
+      "PASS: pill label, placement beside Subagents, pill-to-panel morph (faces, corner, size, reduced motion), rows and statuses, light and dark, Escape, collapse and outside click, focus return, narrow layout, hidden when empty, context card tones and Compact now, compaction divider",
     );
     app.exit(0);
   } catch (error) {

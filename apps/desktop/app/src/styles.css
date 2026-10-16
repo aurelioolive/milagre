@@ -6,6 +6,11 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+:root {
+  --window-chrome-height: 60px;
+  --window-chrome-top: calc((var(--window-chrome-height) - 32px) / 2);
+}
+
 html[data-floating-inbox],
 html[data-floating-inbox] body,
 html[data-floating-inbox] #root {
@@ -473,15 +478,6 @@ html[data-floating-inbox] #root {
   --ease-link: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* "Translucent window": the window is see-through and macOS blurs what's behind it. The two
- * sliders set how much shows through, 0 to 1: `--window-translucency` thins the page's own tint,
- * and `--panel-translucency` thins the sidebar, panels and fields (at 0.4 a light surface keeps
- * 72% of its opacity and a dark one 62%, so text stays readable). */
-.translucent,
-.translucent body {
-  background: transparent;
-}
-
 /* ── base ─────────────────────────────────────────────── */
 
 /* The title bar moves the window, except while a popover is open: a press on a drag region never reaches
@@ -659,6 +655,27 @@ a {
   display: none;
 }
 
+/* The composer row's pills: frosted glass over the transcript, a tint of their tone, a hairline ring (a ring, not a
+ * border, so a PillMorph panel inside the surface lines up with its edge) and a lit top edge. */
+.status-pill {
+  background: color-mix(in oklab, color-mix(in oklab, var(--status-pill-tint, var(--surface)) 9%, var(--surface)) 68%, transparent);
+  backdrop-filter: blur(var(--blur-chip)) saturate(1.6);
+  -webkit-backdrop-filter: blur(var(--blur-chip)) saturate(1.6);
+  box-shadow:
+    0 0 0 1px var(--status-pill-ring, var(--line)),
+    inset 0 1px 0 oklch(1 0 0 / 0.55),
+    0 1px 2px oklch(0.24 0.008 258 / 0.05);
+}
+.status-pill:not(:disabled):hover {
+  background: color-mix(in oklab, color-mix(in oklab, var(--status-pill-tint, var(--hover)) 12%, var(--hover)) 84%, transparent);
+}
+.dark .status-pill {
+  box-shadow:
+    0 0 0 1px var(--status-pill-ring, var(--line)),
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 1px 2px oklch(0 0 0 / 0.24);
+}
+
 /* The prompt is a floating control, not a raised card. Keep its elevation
  * close to the surface so the lower edge does not read as a second bar. */
 .promptbar-surface {
@@ -796,6 +813,12 @@ a {
 /* Project action rows keep the picker's neutral focus fill inside its scrolling panel. */
 [data-link-project-menu] [data-picker-row]:focus-visible {
   outline: none;
+}
+
+/* Settings › MCP keeps every accent in ink, focus rings included. */
+[data-mcp-page] :focus-visible,
+[data-mcp-sheet] :focus-visible {
+  outline-color: var(--ink);
 }
 
 input:focus-visible,
@@ -1691,27 +1714,69 @@ code.step-shimmer {
     display: none;
   }
 }
-.milagre-canvas-flow .react-flow__controls {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: var(--shadow-card);
+/* The Projects canvas sits on the window's own dotted page, like the subagent canvas: no panel, edges fade out. */
+[data-workspace-main]:has(> .milagre-canvas) {
+  margin-left: -12px;
+  padding-right: 0;
+  padding-bottom: 0;
 }
 
-.milagre-canvas-flow .react-flow__controls-button {
+.milagre-canvas-surface {
+  --canvas-edge: 16px;
+  mask-image:
+    linear-gradient(to right, transparent, #000 var(--canvas-edge), #000 calc(100% - var(--canvas-edge)), transparent),
+    linear-gradient(to bottom, transparent, #000 var(--canvas-edge), #000 calc(100% - var(--canvas-edge)), transparent);
+  mask-composite: intersect;
+}
+
+.milagre-canvas-flow {
+  --xy-background-color: transparent;
+}
+
+/* A Project: its hue at a whisper, so the cards stay the brightest thing in it. */
+.milagre-canvas-section {
+  background: color-mix(in srgb, var(--section) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--section) 20%, transparent);
+}
+
+.milagre-canvas-flow .react-flow__node-project,
+.milagre-canvas-flow .react-flow__node-worktree {
+  border-radius: var(--radius-card);
+}
+
+/* Link dots wait for the pointer: on the card or section under it, and on every one while a Link is being drawn. */
+.milagre-canvas-flow .milagre-canvas-handle {
+  opacity: 0;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--line-strong);
   background: var(--surface);
-  color: var(--ink-2);
-  fill: currentColor;
-  border-color: var(--line);
+  transition:
+    opacity 120ms ease-out,
+    border-color 120ms ease-out,
+    transform 120ms ease-out;
 }
 
-.milagre-canvas-flow .react-flow__controls-button:hover {
-  background: var(--hover-2);
+.milagre-canvas-flow .react-flow__node:hover > div > .milagre-canvas-handle,
+.milagre-canvas-flow .react-flow__node:focus-within > div > .milagre-canvas-handle,
+.milagre-canvas-flow[data-connecting] .milagre-canvas-handle,
+.milagre-canvas-flow .milagre-canvas-handle:hover {
+  opacity: 1;
 }
 
-.milagre-canvas-flow .react-flow__attribution {
-  background: transparent;
-  color: var(--ink-3);
+.milagre-canvas-flow .milagre-canvas-handle:hover,
+.milagre-canvas-flow .react-flow__handle.connectingfrom,
+.milagre-canvas-flow .react-flow__handle.valid {
+  border-color: var(--accent);
+  transform: translate(var(--handle-shift, 0), -50%) scale(1.2);
+}
+
+.milagre-canvas-flow .react-flow__handle-left {
+  --handle-shift: -50%;
+}
+
+.milagre-canvas-flow .react-flow__handle-right {
+  --handle-shift: 50%;
 }
 
 /* A Link something travels along: its line moves toward the receiving side. Still under reduced motion. */

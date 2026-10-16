@@ -717,6 +717,11 @@ test("the design instructions point the agent at the bundled design skill, which
   assert.match(require("node:fs").readFileSync(file, "utf8"), /^name: design$/m);
 });
 
+test("the design instructions name icon layers and the rendered image to check", () => {
+  assert.match(MILAGRE_INSTRUCTIONS, /named layers for frames, text, shapes, icons and images/);
+  assert.match(MILAGRE_INSTRUCTIONS, /result includes the saved design rendered as an image, with layout warnings; check both/);
+});
+
 test("the design instructions defer to a design tool the user names", () => {
   assert.match(MILAGRE_INSTRUCTIONS, /When the user names another design tool .*do not call design_show/);
 });
@@ -734,4 +739,11 @@ test("the instructions point the agent at the bundled genui skill, which exists"
   assert.ok(file, "the instructions name the skill's file");
   assert.match(require("node:fs").readFileSync(file, "utf8"), /^name: genui$/m);
   assert.match(MILAGRE_INSTRUCTIONS, /fenced block whose info string is `openui`/);
+});
+
+test("Milagre instructions tell every agent to plan with the task tools", () => {
+  const text = milagreInstructions();
+  assert.match(text, /tasks_set/);
+  assert.match(text, /task_update/);
+  assert.match(text, /phase_set/);
 });

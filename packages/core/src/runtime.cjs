@@ -1,6 +1,8 @@
 const { createAccountRouting } = require("./account-routing.cjs");
 const { createLimitSwitch } = require("./limit-switch.cjs");
 const { createMcp } = require("./mcp/index.cjs");
+const { createMcpStore } = require("./mcp/store.cjs");
+const { openInBrowser } = require("./antigravity-account.cjs");
 const { createAccounts } = require("./accounts.cjs");
 const { createLinkStore } = require("./link-store.cjs");
 const { createLinkWorkspaces } = require("./link-workspaces.cjs");
@@ -10,6 +12,7 @@ const { isLinkScopeKey, scopeFromKey, scopeKey } = require("@milagre/shared/chat
 const { PROVIDERS } = require("@milagre/shared/providers");
 const { pullRequestActionBody, pullRequestActionContext, pullRequestActionPrompt } = require("@milagre/shared/pr-action");
 const { compactionMessage } = require("@milagre/shared/compaction");
+const { RELOAD_TEXT } = require("@milagre/shared/chat-reload");
 const { issueFirstMessage, linearIssueContext, linearIssuePrompt, linearIssueRequest } = require("@milagre/shared/linear-issue");
 const { ChatTitles, createChatTitleModels, generateChatTitle } = require("./chat-title.cjs");
 const { createGit } = require("./git/client.cjs");
@@ -170,6 +173,10 @@ function createRuntime(options) {
     directory: path.join(dataDir, "design-page-shares"),
     artifacts,
     validateChat: existingChat("sharing Designs"),
+    chatTitle: async (chatId) => {
+      const session = (await scopeStates.get(projectOfKey(chatId)))?.sessions[sessionIdFromKey(chatId)];
+      return session?.title || session?.generatedTitle || null;
+    },
     ...options.designSharing,
   });
   commands.handle("artifact:page-shares", (_context, request) => designPageSharing.list(request));
@@ -187,6 +194,7 @@ function createRuntime(options) {
   commands.handle("artifact:get", (_context, request) => artifacts.get(request));
   commands.handle("artifact:list", (_context, request) => artifacts.list(request));
   commands.handle("artifact:apply", (_context, request) => artifacts.apply(request));
+  commands.handle("artifact:delete", (_context, request) => artifacts.deleteDesign(request));
   commands.handle("artifact:add-comments", (_context, request) => artifacts.addComments(request));
   commands.handle("artifact:comments", (_context, request) => artifacts.comments(request));
   for (const method of ["list", "attach", "detach"])
@@ -229,11 +237,13 @@ function createRuntime(options) {
     options.terminals ??
     require("./terminals.cjs").createTerminals({
       resolveChat: chatWorktrees,
+      settingsFile: path.join(dataDir, "terminal-settings.json"),
       onChange: (chatId) => emit("terminal:changed", { chatId }),
+      onPreferencesChanged: () => emit("terminal:preferences-changed", {}),
       onShellsChanged: () => ports.wake(),
     });
   commands.handle("terminal:list", (_context, request) => terminals.list(request));
-  for (const method of ["open", "read", "input", "resize", "close"]) {
+  for (const method of ["profiles", "setShell", "open", "read", "input", "resize", "close"]) {
     commands.handle(`terminal:${method}`, (context, request) => {
       if (!context?.clientId) throw new Error("Terminal access requires an authenticated connection");
       return terminals[method](request);
@@ -884,12 +894,15 @@ function createRuntime(options) {
   const agents = new SessionManager({
     createSession:
       options.createSession ??
-      ((provider, options) =>
-        provider === "codex"
-          ? new CodexSession({ ...options, clientVersion: version })
+      ((provider, options) => {
+        // Settings › MCP: Everywhere servers and the off list for this provider account (mcp is created further down).
+        const withMcp = { ...options, mcpExtras: () => mcp.forSession(provider, options.accountId ?? "default") };
+        return provider === "codex"
+          ? new CodexSession({ ...withMcp, clientVersion: version })
           : provider === "antigravity"
-            ? new AcpSession({ ...options, clientVersion: version, config: antigravityAcp })
-            : new ClaudeSession(options)),
+            ? new AcpSession({ ...withMcp, clientVersion: version, config: antigravityAcp })
+            : new ClaudeSession(withMcp);
+      }),
     linkedFor: (chatId) => linked.forChat(chatId),
     onSessionClosed: (chatId) => keepAwake.chatClosed(chatId),
     onTurnStarted: () => ports.wake(),
@@ -1050,10 +1063,36 @@ function createRuntime(options) {
       return pending;
     });
   // Settings › MCP (docs/superpowers/specs/2026-10-09-mcp-settings-design.md): each account's servers and their status.
-  // Read only; the tab checks every account in parallel.
-  const mcp = createMcp({ accounts, routing, cwd: require("node:os").homedir(), clientVersion: version });
+  // The tab checks every account in parallel; saves, switches and sign-ins go through the same module.
+  const mcp = createMcp({
+    accounts,
+    routing,
+    cwd: require("node:os").homedir(),
+    clientVersion: version,
+    store: createMcpStore(path.join(dataDir, "mcp.json")),
+    openUrl: (url) => openInBrowser(url),
+    emit,
+    // Tests swap in accounts, routing, home and stub checkers, writers and signers.
+    ...options.mcp,
+  });
+  // Phones call these too: `previous` arrives as JSON, so it becomes { name, target } strings or undefined (a new
+  // server); mcp.save checks both before anything is read or written, and keeps only the known definition fields.
+  const mcpPrevious = (previous) =>
+    previous === undefined || previous === null
+      ? undefined
+      : {
+          name: typeof previous?.name === "string" ? previous.name : "",
+          target: typeof previous?.target === "string" ? previous.target : "",
+        };
   commands.handle("mcp:accounts", () => mcp.accounts());
   commands.handle("mcp:check", (_event, provider, accountId) => mcp.check(String(provider), String(accountId)));
+  commands.handle("mcp:definition", (_event, name, target) => mcp.definition(String(name), String(target)));
+  commands.handle("mcp:save", (_event, def, target, previous) => mcp.save(def, String(target), mcpPrevious(previous)));
+  commands.handle("mcp:saveUrl", (_event, def, target, previous) => mcp.saveUrl(def, String(target), mcpPrevious(previous)));
+  commands.handle("mcp:remove", (_event, name, target) => mcp.remove(String(name), String(target)));
+  commands.handle("mcp:toggle", (_event, provider, accountId, name, on) => mcp.toggle(String(provider), String(accountId), String(name), on === true));
+  commands.handle("mcp:signIn", (_event, name, targets) => mcp.signIn(String(name), Array.isArray(targets) ? targets : []));
+  commands.handle("mcp:cancelSignIn", (_event, name) => mcp.cancelSignIn(String(name)));
 
   // The Mac's Linear connections, one per workspace. Phones read them and the Experimental switch; only the Mac connects (mobile-bridge.cjs).
   const linear = createLinear({
@@ -1232,6 +1271,24 @@ function createRuntime(options) {
 
   commands.handle("agent:interrupt", async (_event, chatId) => {
     await existingChat("stopping advisors")(chatId);
+    await stopChat(chatId);
+  });
+
+  // Reload: a running turn stops, as Stop does, and the agent's process ends. The Chat's next message starts a new one
+  // on the same session, which reads its MCP servers, skills and sign-in again.
+  commands.handle("chat:reload", async (_event, chatId) => {
+    await existingChat("reloading it")(chatId);
+    if (chats.runs[chatId]) await stopChat(chatId);
+    const state = await scopeStates.get(projectOfKey(chatId));
+    const sessionId = sessionIdFromKey(chatId);
+    // An empty Chat gets no line: it stays the one its Worktree reuses for the next send. An unloaded Chat's messages
+    // aren't in the state: its summary counts them.
+    if ((state.sessions[sessionId]?.summary?.count ?? 0) > 0 || state.messages.some((message) => message.session_id === sessionId))
+      await chats.addNote(chatId, { body: RELOAD_TEXT, context: { kind: "reload" } });
+    await agents.closeChat(chatId);
+  });
+
+  async function stopChat(chatId) {
     await advisorDelivery.stop(chatId);
     await advisors.stopChat(chatId);
     // A handoff still writing its brief has no agent to stop: cancelling it is the whole interrupt.
@@ -1239,7 +1296,7 @@ function createRuntime(options) {
     await worktreeSetups.cancel(chatId);
     await linked.stop({ chatKey: chatId });
     await agents.interrupt(chatId);
-  });
+  }
 
   commands.handle("agent:respond-permission", (_event, { chatId, requestId, decision }) => agents.respondToPermission(chatId, requestId, decision));
 
@@ -1323,6 +1380,11 @@ function createRuntime(options) {
     await linkedState(projectPath);
     return chatIds ? scopeStates.chatMessages(projectPath, chatIds) : scopeStates.allMessages(projectPath);
   };
+  // Milagre's own task list and phase tools, the same for every provider (chat-plan-tools.cjs).
+  const planTools = require("./chat-plan-tools.cjs").createChatPlanTools({
+    read: (chatId) => chats.plan(chatId),
+    update: (chatId, change) => chats.updatePlan(chatId, change),
+  });
   const linked = createLinkedWorktrees({
     dataDir,
     registry: projectRegistry,
@@ -1336,6 +1398,7 @@ function createRuntime(options) {
     agents,
     emit,
     extraTools: (chatId) => [
+      ...planTools.definitions(chatId),
       ...simulatorToolDefinitions(chatId, simulators),
       ...require("./chat-browsers.cjs").browserToolDefinitions(chatId, browsers),
       ...(existsSync(path.join(__dirname, "design-mcp-tools.cjs"))
@@ -1748,7 +1811,7 @@ function createRuntime(options) {
       readProject,
       scopeStates,
       chats,
-      permissionMode: (chatId) => agents.permissionMode(chatId),
+      permissionMode: (chatId, fallback) => agents.permissionMode(chatId, fallback),
       createWorktree: (context, request) => handlers.get("worktree:create")(context, request),
       validateDesignChat: async (chatId) => {
         const scope = projectOfKey(chatId);

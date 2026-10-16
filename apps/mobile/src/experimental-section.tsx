@@ -14,10 +14,13 @@ import { Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { DEFAULT_THEME_ID, seedsFrom } from "@milagre/shared/themes";
 import { CustomThemeSection } from "./custom-theme-section";
-import { useMuriloMode } from "./murilo-mode";
 import { useFloatingInbox, useFloatingInboxActivity } from "./floating-inbox-setting";
 import { useUltracodeFatality } from "./ultracode-fatality-setting";
 import { useSession } from "./session";
+import { usePush } from "./push";
+import { Icon } from "./icons";
+import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { notificationChimeLabel } from "@milagre/shared/notification-chimes";
 import { useTheme } from "./theme";
 import { ErrorNotice, ListRow, PillButton, Toggle, useStyles } from "./ui";
 
@@ -25,11 +28,11 @@ import { ErrorNotice, ListRow, PillButton, Toggle, useStyles } from "./ui";
 export function ExperimentalSection() {
   const styles = useStyles();
   const session = useSession();
-  const [muriloMode, setMuriloMode] = useMuriloMode();
   const [floatingInbox, setFloatingInbox] = useFloatingInbox();
   const [inboxActivity, setInboxActivity] = useFloatingInboxActivity();
   const [fatality, setFatality] = useUltracodeFatality();
-  const { settings, set } = useTheme();
+  const { settings, set, colors } = useTheme();
+  const push = usePush();
   // On: start from the current theme's colors and select Custom. Off while Custom is selected: back to Milagre Blue, seeds kept.
   function changeCustomTheme(enabled: boolean) {
     if (!enabled) {
@@ -170,16 +173,23 @@ export function ExperimentalSection() {
         )}
       </View>
       <View style={[styles.card, { gap: 4 }]}>
-        <Toggle title="Murilo mode" selected={muriloMode} onPress={() => setMuriloMode(!muriloMode)} />
-        <Text style={styles.caption}>
-          Shows every tool call in the Chat, one row each, with the agent&apos;s notes between them. Replies no longer fold their activity into one line.
-        </Text>
-      </View>
-      <View style={[styles.card, { gap: 4 }]}>
         <Toggle title="Ultracode Fatality" selected={fatality} onPress={() => setFatality(!fatality)} />
         <Text style={styles.caption}>
           Turning Ultracode on darkens the screen, slams ULTRACODE across it Mortal Kombat style, and an announcer says it out loud.
         </Text>
+      </View>
+      <View style={[styles.card, { gap: 4 }]}>
+        <ListRow
+          title="Notification chime"
+          onPress={() => router.push("/chime-sheet")}
+          trailing={
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <Text style={{ color: colors.ink3, fontSize: 17 }}>{notificationChimeLabel(push.state?.chime)}</Text>
+              <Icon icon={ArrowRight01Icon} tone="ink3" size={16} />
+            </View>
+          }
+        />
+        <Text style={styles.caption}>Plays when a Chat finishes or needs you, on this phone. Picking one plays it.</Text>
       </View>
       <View style={[styles.card, { gap: 4 }]}>
         <Toggle title="Custom theme" selected={settings.customThemeEnabled} onPress={() => changeCustomTheme(!settings.customThemeEnabled)} />

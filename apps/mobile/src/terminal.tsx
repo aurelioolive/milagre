@@ -7,13 +7,14 @@ import { DomWebView, type DomWebViewRef } from "@expo/dom-webview";
 import { File, Paths } from "expo-file-system";
 import { Add01Icon, Cancel01Icon, ComputerTerminal01Icon } from "@hugeicons/core-free-icons";
 import type { LinkChatSession } from "@milagre/shared/model";
-import type { TerminalInfo, TerminalList } from "@milagre/shared/terminal";
+import type { TerminalInfo, TerminalList, TerminalProfiles } from "@milagre/shared/terminal";
 import { followTerminal, type TerminalFollower } from "@milagre/shared/terminal-client";
 import type { Client } from "./client";
 import { useSession } from "./session";
 import { Icon } from "./icons";
 import { useTheme } from "./theme";
-import { CircleButton, PillButton, useStyles } from "./ui";
+import { StatusPill } from "./status-pill";
+import { CircleButton, PillButton, PullDown, useStyles } from "./ui";
 import { createTerminalHtml, scriptValue, xtermTheme, type TerminalTheme, type TerminalViewMessage } from "./terminal-receiver";
 
 /** A Worktree a new Terminal can start in; a shared Chat has one per member Project. */
@@ -65,37 +66,22 @@ function useTerminals(client: Client | null, chatId: string | undefined) {
   return { terminals, setTerminals, refresh: () => refresh.current() };
 }
 
-/** Same border, height and icon size as the Ports pill. Shown for every sent Chat on a Mac that has Terminals. */
+/** Shown for every sent Chat on a Mac that has Terminals. */
 export function TerminalChip({ chatId, places }: { chatId?: string; places?: TerminalPlace[] }) {
-  const { colors } = useTheme();
   const { client } = useSession();
   const { terminals } = useTerminals(client, chatId);
   if (!client || !chatId || !terminals) return null;
   const count = terminals.length;
   return (
-    <Pressable
-      accessibilityRole="button"
+    <StatusPill
+      label="Terminal"
+      count={count || undefined}
+      icon={ComputerTerminal01Icon}
       accessibilityLabel={count ? `Terminal, ${count} open in this Chat` : "Open a Terminal in this Chat"}
       onPress={() =>
         router.push({ pathname: "/terminal-sheet", params: { hostId: client.url, chatId, ...(places?.length ? { places: JSON.stringify(places) } : {}) } })
       }
-      hitSlop={8}
-      style={({ pressed }) => ({
-        height: 24,
-        paddingHorizontal: 8,
-        borderRadius: 12,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-        borderWidth: 1,
-        borderColor: colors.line,
-        backgroundColor: colors.surface,
-        opacity: pressed ? 0.7 : 1,
-      })}
-    >
-      <Icon icon={ComputerTerminal01Icon} tone="ink2" size={12} />
-      <Text style={{ color: colors.ink2, fontSize: 11 }}>{count ? `Terminal ${count}` : "Terminal"}</Text>
-    </Pressable>
+    />
   );
 }
 
@@ -137,6 +123,50 @@ export function TerminalSheet({ hostId, chatId, places }: { hostId?: string; cha
   const openedFirst = useRef(false);
   const shown = terminals?.find((terminal) => terminal.id === active) ?? terminals?.at(-1) ?? null;
   const multiple = (places?.length ?? 0) > 1;
+  const [profileState, setProfileState] = useState<{ source: Client; profiles: TerminalProfiles } | null>(null);
+  const profiles = profileState?.source === source ? profileState.profiles : null;
+  const [savingSource, setSavingSource] = useState<Client | null>(null);
+  const savingShell = source !== null && savingSource === source;
+  const profileRevision = useRef(0);
+  useEffect(() => {
+    profileRevision.current++;
+  }, [source]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!source) return;
+      let disposed = false;
+      const load = async () => {
+        if (AppState.currentState !== "active") return;
+        const revision = profileRevision.current;
+        try {
+          const next = await source.call<TerminalProfiles>("terminal:profiles", []);
+          if (!disposed && revision === profileRevision.current) setProfileState({ source, profiles: next });
+        } catch {
+          /* Older computers have no shell selector. */
+        }
+      };
+      void load();
+      const timer = setInterval(load, 5000);
+      return () => {
+        disposed = true;
+        clearInterval(timer);
+      };
+    }, [source]),
+  );
+  async function chooseShell(value: string) {
+    if (!source) return;
+    const revision = ++profileRevision.current;
+    setSavingSource(source);
+    try {
+      const next = await source.call<TerminalProfiles>("terminal:setShell", [{ shell: value || null }]);
+      if (revision === profileRevision.current) setProfileState({ source, profiles: next });
+      setError("");
+    } catch (failure) {
+      Alert.alert("Couldn't select a shell", failure instanceof Error ? failure.message : "Try again.");
+    } finally {
+      if (revision === profileRevision.current) setSavingSource(null);
+    }
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -217,6 +247,38 @@ export function TerminalSheet({ hostId, chatId, places }: { hostId?: string; cha
         </View>
         <CircleButton label="New Terminal" icon={Add01Icon} onPress={opening ? undefined : add} />
       </View>
+      {profiles && (
+        <View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 4 }}>
+          <PullDown
+            label="Shell for new Terminals"
+            title="Shell for new Terminals"
+            nativeTrigger={{
+              systemImage: "terminal",
+              title: profiles.shells.find((item) => item.file === profiles.selectedShell)?.label ?? "Automatic",
+              disabled: savingShell,
+            }}
+            sections={[
+              {
+                items: [
+                  { id: "automatic", title: `Automatic (${profiles.defaultShell})`, checked: profiles.selectedShell === null, disabled: savingShell },
+                  ...profiles.shells.map((item) => ({
+                    id: item.file,
+                    title: `${item.label} (${item.file})`,
+                    checked: profiles.selectedShell === item.file,
+                    disabled: savingShell,
+                  })),
+                ],
+              },
+            ]}
+            onSelect={(value) => void chooseShell(value === "automatic" ? "" : value)}
+          >
+            <Text style={{ color: colors.ink2, fontSize: 13 }}>
+              New Terminals: {profiles.shells.find((item) => item.file === profiles.selectedShell)?.label ?? "Automatic"}
+            </Text>
+          </PullDown>
+          <Text style={{ color: colors.ink3, fontSize: 11 }}>Applies to new Terminals on this computer.</Text>
+        </View>
+      )}
       {!!terminals?.length && (
         <ScrollView
           horizontal

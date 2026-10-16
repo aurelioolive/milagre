@@ -78,19 +78,23 @@ function serial() {
   };
 }
 
+const decode = (value) => value.replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[entity]);
+
 /** The generated wrapper keeps its escaped title at the start of the first chunk.
  * Decorate reads so existing snapshots gain previews without rewriting their content.
  * Splice bytes, not decoded chunks: UTF-8 characters can span storage boundaries. */
 function withSocialPreview(chunk, requestUrl) {
   const prefix = new TextDecoder().decode(chunk.subarray(0, 4096));
-  const title = /<title>([^<]{1,1024}) \| Milagre (Designs|Artifact)<\/title>/.exec(prefix);
+  const title = /<title>([^<]{1,1024}) \| Milagre (Designs|Artifact)<\/title>(?:<meta name="description" content="([^"<>]{1,2048})">)?/.exec(prefix);
   if (!title) return chunk;
   const url = new URL(requestUrl);
   url.search = "";
   url.hash = "";
   const escape = (value) => value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
-  const decoded = title[1].replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[entity]);
-  const description = title[2] === "Designs" ? "View this Designs page shared with Milagre." : "Open this interactive Artifact shared with Milagre.";
+  const decoded = decode(title[1]);
+  // Pages published before descriptions existed keep the generic line.
+  const own = title[3] ? decode(title[3]) : "";
+  const description = own || (title[2] === "Designs" ? "View this Designs page shared with Milagre." : "Open this interactive Artifact shared with Milagre.");
   const image = `${url.origin}/og.png`;
   const properties = {
     "og:type": "website",
@@ -105,7 +109,7 @@ function withSocialPreview(chunk, requestUrl) {
     "og:image:alt": "Shared with Milagre. Designs and interactive Artifacts.",
   };
   const names = {
-    description,
+    ...(own ? {} : { description }),
     "twitter:card": "summary_large_image",
     "twitter:title": decoded,
     "twitter:description": description,
@@ -129,6 +133,9 @@ function withSocialPreview(chunk, requestUrl) {
   return output;
 }
 
+/** Pages published before replacements existed have no revision and keep their original keys. */
+const chunkKey = (revision, index) => (revision ? `html:${revision}:${index}` : `html:${index}`);
+
 /** The adapter's transaction is synchronous and atomic (SQLite Durable Object transactionSync). */
 export function createPageService({ storage, validate, render, admit, reserve }) {
   const enqueue = serial();
@@ -144,17 +151,20 @@ export function createPageService({ storage, validate, render, admit, reserve })
             if (request.method === "HEAD") return response(null, 200, "text/html; charset=utf-8");
             let index = 0;
             // A zero high-water mark prevents idle readers from retaining even one chunk.
-            // Check the tombstone on every pull so revocation stops an in-flight response.
+            // Check the metadata on every pull: revocation stops an in-flight response, and a reader
+            // started on one revision ends rather than splicing in chunks of the replacement.
             const stream = new ReadableStream(
               {
                 pull(controller) {
                   try {
-                    if (storage.get("meta")?.deleted) throw new Error("Snapshot revoked");
+                    const current = storage.get("meta");
+                    if (current?.deleted) throw new Error("Snapshot revoked");
+                    if (current?.revision !== meta.revision) throw new Error("Snapshot updated");
                     if (index >= meta.chunks) {
                       controller.close();
                       return;
                     }
-                    const chunk = storage.get(`html:${index++}`);
+                    const chunk = storage.get(chunkKey(meta.revision, index++));
                     if (!(chunk instanceof Uint8Array)) throw new Error("Missing stored chunk");
                     controller.enqueue(index === 1 ? withSocialPreview(chunk, request.url) : chunk);
                   } catch (error) {
@@ -172,7 +182,7 @@ export function createPageService({ storage, validate, render, admit, reserve })
             if (!meta && !(await reserve(ip, 1024))) return response("Publishing limit reached", 429);
             if (!meta?.deleted)
               storage.transaction(() => {
-                for (let i = 0; i < (meta?.chunks ?? 0); i++) storage.delete(`html:${i}`);
+                for (let i = 0; i < (meta?.chunks ?? 0); i++) storage.delete(chunkKey(meta.revision, i));
                 storage.put("meta", { deleted: true });
               });
             return response(null, 204);
@@ -198,8 +208,10 @@ export function createPageService({ storage, validate, render, admit, reserve })
           if (canonical.byteLength > MAX_BODY_BYTES) return response("Snapshot too large", 413);
           const hash = await digest(canonical);
           const result = () => JSON.stringify({ id, path: `/s/${id}` });
-          if (meta)
-            return meta.hash === hash ? response(result(), 200, "application/json; charset=utf-8") : response("Published snapshots cannot be changed", 409);
+          // An identical retry is free. Changed content replaces the page and pays like a new publication;
+          // only now, after hashing, can a replacement be told apart from a retry, so admit it before rendering.
+          if (meta?.hash === hash) return response(result(), 200, "application/json; charset=utf-8");
+          if (meta && !(await admit(ip))) return response("Publishing limit reached", 429);
           let html;
           try {
             html = encoder.encode(render(snapshot));
@@ -211,11 +223,15 @@ export function createPageService({ storage, validate, render, admit, reserve })
           // Count even failed writes against the budget. A crash can spend a reservation twice, but never bypass it.
           if (!(await reserve(ip, canonical.byteLength + html.byteLength))) return response("Publishing limit reached", 429);
           const count = Math.ceil(html.byteLength / CHUNK_BYTES);
+          // A replacement writes under the next revision and drops the old chunks in the same transaction,
+          // so storage holds one version and readers of the old one stop instead of mixing the two.
+          const revision = meta ? (meta.revision ?? 0) + 1 : 0;
           storage.transaction(() => {
-            for (let i = 0; i < count; i++) storage.put(`html:${i}`, html.slice(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES));
-            storage.put("meta", { hash, chunks: count });
+            for (let i = 0; i < (meta?.chunks ?? 0); i++) storage.delete(chunkKey(meta.revision, i));
+            for (let i = 0; i < count; i++) storage.put(chunkKey(revision, i), html.slice(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES));
+            storage.put("meta", { hash, chunks: count, revision });
           });
-          return response(result(), 201, "application/json; charset=utf-8");
+          return response(result(), meta ? 200 : 201, "application/json; charset=utf-8");
         } catch (error) {
           return response(error?.status === 413 ? "Snapshot too large" : "Unable to process snapshot", error?.status === 413 ? 413 : 503);
         }
@@ -268,6 +284,10 @@ export function createQuotaService({ storage, limits, now = Date.now }) {
   };
 }
 
+/** No crawler may fetch shares, link preview bots included: Slack, Twitter/X and LinkedIn
+ * honor this and unfurl a bare URL. A crawler that ignores it still gets noindex on every page. */
+const ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
+
 /** Public routing is separate from internal DO requests: clients cannot reach the quota object. */
 export async function routeRequest(request, env) {
   const url = new URL(request.url);
@@ -275,6 +295,10 @@ export async function routeRequest(request, env) {
   if (!local && (url.protocol !== "https:" || url.origin !== env.PUBLIC_ORIGIN)) return response("Not found", 404);
   if (url.username || url.password) return response("Not found", 404);
   if (url.pathname === "/health" && request.method === "GET") return response("ok");
+  if (url.pathname === "/robots.txt") {
+    if (!["GET", "HEAD"].includes(request.method)) return response("Method not allowed", 405);
+    return response(request.method === "HEAD" ? null : ROBOTS_TXT);
+  }
   if (url.pathname === "/og.png") {
     if (!["GET", "HEAD"].includes(request.method)) return response("Method not allowed", 405);
     if (!env.previewImage) return response("Not found", 404);

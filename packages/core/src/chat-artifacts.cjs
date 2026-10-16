@@ -2,7 +2,26 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
 const { z } = require("zod");
-const { designDocumentSchema, designOperationSchema, validateDesignDocument, applyDesignOperations, designHtml, designSvg } = require("@milagre/shared/design");
+const {
+  designDocumentSchema,
+  designOperationSchema,
+  validateDesignDocument,
+  applyDesignOperations,
+  designHtml,
+  designSvg,
+  designWarnings,
+  designWarningText,
+  designUsesInter,
+  designCatalogFont,
+  designInterHasGlyph,
+  designInstanceRoot,
+  loadDesignFonts,
+} = require("@milagre/shared/design");
+const { renderDesignPng } = require("./design-raster.cjs");
+const { BUNDLED_SKILLS_DIRECTORY } = require("./bundled-skills.cjs");
+// The tool descriptions carry what an agent needs to design here, for subagents too: they don't see the parent
+// agent's system prompt (events.cjs milagreInstructions), only the tools.
+const DESIGN_SKILL = path.join(BUNDLED_SKILLS_DIRECTORY, "design", "SKILL.md");
 
 // Each artifact keeps immutable versions, so a reply's card shows the design as it was then while the docked
 // viewer follows the latest. Structured designs and HTML explanatory artifacts keep separate formats.
@@ -32,6 +51,7 @@ const summary = (artifact, entry) => ({
   width: entry.width ?? VIEWPORT.width,
   height: entry.height ?? VIEWPORT.height,
   format: formatOf(entry),
+  ...(entry.group ? { group: entry.group } : {}),
 });
 
 function checkVersion(request, existing, required = false) {
@@ -95,13 +115,17 @@ function createChatArtifacts({ directory, validateChat, settingsFile = path.join
     await fs.mkdir(designFolder(folder, meta.id), { recursive: true, mode: 0o700 });
     await atomicWrite(path.join(designFolder(folder, meta.id), "meta.json"), JSON.stringify(meta), assertActive);
   }
-  async function load(folder, id) {
+  // A deleted design keeps only its metadata, marked deleted: its id is never reused, so the cards still in the Chat
+  // never show another design under the versions they name.
+  async function load(folder, id, { deleted = false } = {}) {
     const file = path.join(designFolder(folder, id), "meta.json");
     try {
-      return JSON.parse(await fs.readFile(file, "utf8"));
+      const meta = JSON.parse(await fs.readFile(file, "utf8"));
+      return !meta.deletedAt === !deleted ? meta : null;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
+    if (deleted) return null;
     // Migrate original single-file HTML only after all version files exist; metadata commits the migration.
     const legacyFile = path.join(folder, `${checkId(id)}.json`);
     let legacy;
@@ -217,7 +241,8 @@ function createChatArtifacts({ directory, validateChat, settingsFile = path.join
           editable(named, "html");
         }
         const current = (await activeArtifacts(folder, "html"))[0];
-        const id = current?.id ?? request.id ?? randomUUID().slice(0, 8);
+        const reusable = request.id && !(await load(folder, request.id, { deleted: true }));
+        const id = current?.id ?? (reusable ? request.id : randomUUID().slice(0, 8));
         const existing = current ?? null;
         editable(existing, "html");
         checkVersion(request, existing);
@@ -241,18 +266,24 @@ function createChatArtifacts({ directory, validateChat, settingsFile = path.join
         if (typeof request?.title !== "string" || !request.title.trim()) throw Error("A design needs a title.");
         const id = request.id ?? randomUUID().slice(0, 8);
         const existing = request.id ? await load(folder, id) : null;
+        if (!existing && request.id && (await load(folder, id, { deleted: true }))) throw Error(`The design ${id} was deleted. Use a new id.`);
         editable(existing);
         checkVersion(request, existing, true);
         const document = validateDesignDocument(request.document);
         const previous = existing?.versions ?? [];
+        // A revision stays in its group unless it names one; an empty group takes it out.
+        const group = typeof request.group === "string" ? request.group.trim().slice(0, 60) : previous.at(-1)?.group;
         const entry = {
           version: (previous.at(-1)?.version ?? 0) + 1,
           title: request.title.trim().slice(0, 120),
+          ...(group ? { group } : {}),
           width: document.width,
           height: document.height,
           format: "design",
           createdAt: Date.now(),
         };
+        // The saved HTML embeds the catalog families the design names, so the desktop and the phone draw them.
+        await loadDesignFonts(document);
         const artifact = await writeVersion(folder, id, previous, entry, designHtml(document), document, assertActive);
         return summary(artifact, entry);
       }),
@@ -269,11 +300,13 @@ function createChatArtifacts({ directory, validateChat, settingsFile = path.join
         const entry = {
           version: current.version + 1,
           title: current.title,
+          ...(current.group ? { group: current.group } : {}),
           width: document.width,
           height: document.height,
           format: "design",
           createdAt: Date.now(),
         };
+        await loadDesignFonts(document);
         const html = designHtml(document);
         const artifact = await writeVersion(folder, existing.id, existing.versions, entry, html, document, assertActive);
         return { ...summary(artifact, entry), latest: entry.version, html, document };
@@ -303,7 +336,9 @@ function createChatArtifacts({ directory, validateChat, settingsFile = path.join
           version: current.version,
           filename: `${current.id}-v${current.version}.${request.format}`,
           mimeType: svg ? "image/svg+xml" : "application/json",
-          content: svg ? designSvg(current.document) : JSON.stringify(current.document, null, 2),
+          // Agents read this through a tool result, so Inter stays a font-family reference instead of ~250 KB of embedded faces.
+          // The desktop download builds its own SVG with the fonts embedded.
+          content: svg ? designSvg(current.document, { embedFonts: false }) : JSON.stringify(current.document, null, 2),
         };
       }),
     list: (request) =>
@@ -311,6 +346,25 @@ function createChatArtifacts({ directory, validateChat, settingsFile = path.join
         const folder = await chat(request?.chatId);
         checkFormat(request.format);
         return (await activeArtifacts(folder, request.format)).map((artifact) => summary(artifact, artifact.versions.at(-1)));
+      }),
+    /** Deletes every version of a design and the comments on it. */
+    deleteDesign: (request, { assertActive } = {}) =>
+      serial(async () => {
+        await assertActive?.();
+        const folder = await chat(request?.chatId);
+        const existing = await load(folder, request?.id);
+        if (!existing) throw Error("This design is no longer available.");
+        editable(existing);
+        // The marked metadata commits the delete; the version files are only removed after it.
+        await writeMeta(folder, { id: existing.id, versions: [], deletedAt: Date.now() }, assertActive);
+        const names = await fs.readdir(designFolder(folder, existing.id));
+        await Promise.all(
+          names.filter((name) => name !== "meta.json").map((name) => fs.rm(path.join(designFolder(folder, existing.id), name), { force: true })),
+        );
+        const comments = await readComments(folder);
+        const kept = comments.filter((comment) => comment.design?.id !== existing.id);
+        if (kept.length !== comments.length) await writeComments(folder, kept);
+        return { id: existing.id };
       }),
     /** Records the comments the user is sending, and returns them with their ids for the message to name. */
     addComments: (request) =>
@@ -423,21 +477,109 @@ function createChatArtifacts({ directory, validateChat, settingsFile = path.join
   }
 }
 
-function artifactToolDefinitions(chatId, api, authorization) {
+// The most warnings the summary JSON on line 1 carries; the text block below it lists them the same way.
+const MAX_SUMMARY_WARNINGS = 20;
+// The renderer has Inter and the catalog families, so text in any other family is drawn in Inter in the agent's image.
+// Names those families.
+const unbundledFamilies = (document) => {
+  const families = new Set();
+  for (const node of document.nodes) {
+    if (node.type !== "text" || node.hidden || !node.fontFamily || designUsesInter(node.fontFamily) || designCatalogFont(node.fontFamily)) continue;
+    const family = node.fontFamily
+      .split(",")[0]
+      .trim()
+      .replace(/^["']|["']$/g, "");
+    if (family) families.add(family);
+  }
+  return [...families];
+};
+
+const MAX_NAMED_LAYERS = 5;
+
+/** Visible text layers with characters the bundled Inter subset lacks; the agent's image leaves those blank. */
+const undrawableTextLayers = (document) => {
+  const byId = new Map(document.nodes.map((node) => [node.id, node]));
+  const visible = (node) => {
+    for (let depth = 0; node && depth < 64; depth++, node = byId.get(node.parentId)) if (node.hidden) return false;
+    return true;
+  };
+  const ids = new Set();
+  for (const node of document.nodes) {
+    if (node.type !== "text" || !node.text || !visible(node)) continue;
+    if ([...node.text].every(designInterHasGlyph)) continue;
+    // Name the editable instance, never one of its generated children.
+    ids.add((designInstanceRoot(document, node.id, byId) ?? node).id);
+  }
+  return [...ids];
+};
+
+const namedLayers = (ids) =>
+  ids
+    .slice(0, MAX_NAMED_LAYERS)
+    .map((id) => `"${id}"`)
+    .join(", ") + (ids.length > MAX_NAMED_LAYERS ? ` and ${ids.length - MAX_NAMED_LAYERS} more` : "");
+
+// What the agent sees after a design call: the summary (first line, which the Chat card parses), the warnings, and
+// the saved version drawn as a PNG. Neither drawing nor checking fails the call; the version is already saved.
+async function designFeedback(saved, document, { renderPng, warnings: findWarnings }) {
+  const problems = [];
+  let warnings = [];
+  try {
+    warnings = findWarnings(document);
+  } catch (error) {
+    problems.push(`Layout warnings could not be computed: ${error?.message ?? String(error)}.`);
+  }
+  const head = { ...saved, warnings: warnings.slice(0, MAX_SUMMARY_WARNINGS) };
+  if (warnings.length > MAX_SUMMARY_WARNINGS) head.warningCount = warnings.length;
+  const notes = [JSON.stringify(head)];
+  let images = [];
+  try {
+    images = [await renderPng(document)];
+    notes.push(
+      "Look at the image: check icons, spacing, alignment and density against the brief, fix what looks wrong and every item under Warnings with design_apply, then reply.",
+    );
+    const fonts = unbundledFamilies(document);
+    if (fonts.length) notes.push(`Your image shows ${fonts.join(", ")} in Inter; the user sees the real font.`);
+    const blank = undrawableTextLayers(document);
+    if (blank.length)
+      notes.push(`Your image can't draw some characters in ${namedLayers(blank)}; they are blank and the line may look cut there, but the user sees them.`);
+  } catch (error) {
+    notes.push(`The preview could not be rendered: ${error?.message ?? String(error)}. Check the warnings below.`);
+  }
+  notes.push(...problems);
+  // Remote images are only placeholders in the agent's image; there is nothing to fix, so they are notes, not warnings.
+  const text = designWarningText(warnings.filter((warning) => warning.kind !== "remote-image"));
+  if (text) notes.push(`Warnings:\n${text}`);
+  const remote = designWarningText(warnings.filter((warning) => warning.kind === "remote-image"));
+  if (remote) notes.push(`Notes:\n${remote}`);
+  return { text: notes.join("\n"), images };
+}
+
+function artifactToolDefinitions(chatId, api, authorization, { renderPng = renderDesignPng, warnings = designWarnings } = {}) {
   if (!api.enabled()) return [];
+  const feedback = { renderPng, warnings };
   return [
     {
       name: "design_show",
-      description:
-        "Create an editable design in this Chat from a document of named layers, with frames, text, shapes, images, layout and color tokens. The user can edit layers on desktop. On phone they review and choose designs, and request changes through Chat. The document sets the screen size (390 by 844 for a phone). Read the bundled design skill for the document format. A new id creates a design; revising an existing id requires expectedVersion from design_read, so the user's changes are preserved. Prefer design_apply for small revisions. Use a different id for each variant. When the user names another design tool, use that tool instead.",
+      description: `For any UI, screen, mockup or visual design in this Chat, subagents included: use this, not HTML or image files, so it lands on the Chat's Designs canvas, where the user watches, reviews and chooses. Create an editable design from a document of named layers, with frames, text, shapes, icons, images, layout and color tokens. The user can edit layers on desktop. On phone they review and choose designs, and request changes through Chat. The document sets the screen size (390 by 844 for a phone). Read the bundled design skill (${DESIGN_SKILL}) for the document format. A new id creates a design; revising an existing id requires expectedVersion from design_read, so the user's changes are preserved. Prefer design_apply for small revisions. Use a different id for each variant, in the same group; to revise a design, keep its id. When the user names another design tool, use that tool instead. The result includes the rendered design as an image and layout warnings; check both before replying.`,
       input: {
         title: z.string().min(1).max(120),
+        group: z
+          .string()
+          .max(60)
+          .optional()
+          .describe(
+            "The part of the app this screen belongs to, such as Onboarding or Settings. The canvas lays out one row per group. A revision keeps its group unless you pass one; an empty string removes it.",
+          ),
         document: designDocumentSchema,
         id: z.string().regex(ID).optional(),
         expectedVersion: z.number().int().nonnegative().optional(),
       },
       readOnly: false,
-      run: async (args) => JSON.stringify(await api.showDesign({ chatId, ...args }, authorization)),
+      run: async (args) => {
+        const design = await api.showDesign({ chatId, ...args }, authorization);
+        return designFeedback(design, validateDesignDocument(args.document), feedback);
+      },
     },
     {
       name: "design_read",
@@ -453,7 +595,7 @@ function artifactToolDefinitions(chatId, api, authorization) {
     {
       name: "design_apply",
       description:
-        "Edit an existing design with one atomic batch of layer operations: update properties, insert a layer, delete a layer and its descendants, or replace the document. Use stable layer ids. expectedVersion must match the latest version read; a conflict changes nothing, so read again and reapply the intended edits. One successful batch creates one immutable version and shows its design card.",
+        "Revise a design on this Chat's Designs canvas, keeping its id; any agent or subagent changing a design uses this (or design_show with expectedVersion), never a separate file. Edit it with one atomic batch of layer operations: update properties, insert a layer, delete a layer and its descendants, or replace the document. Use stable layer ids. expectedVersion must match the latest version read; a conflict changes nothing, so read again and reapply the intended edits. One successful batch creates one immutable version and shows its design card.",
       input: {
         id: z.string().regex(ID),
         expectedVersion: z.number().int().positive(),
@@ -461,17 +603,25 @@ function artifactToolDefinitions(chatId, api, authorization) {
       },
       readOnly: false,
       run: async (args) => {
-        const { html: _html, document: _document, ...design } = await api.apply({ chatId, ...args }, authorization);
-        return JSON.stringify(design);
+        const { html: _html, document, ...design } = await api.apply({ chatId, ...args }, authorization);
+        return designFeedback(design, document, feedback);
       },
     },
     {
       name: "design_export",
       description:
-        "Export an editable design version as its source JSON document or a standalone SVG. Returns the filename, MIME type and file content. Save the content to a file when the user requests a downloadable export.",
+        "Export an editable design version as its source JSON document or a standalone SVG. The SVG names its fonts without embedding them. Returns the filename, MIME type and file content. Save the content to a file when the user requests a downloadable export.",
       input: { id: z.string().regex(ID), version: z.number().int().positive().optional(), format: z.enum(["json", "svg"]) },
       readOnly: true,
       run: async (args) => JSON.stringify(await api.exportDesign({ chatId, ...args })),
+    },
+    {
+      name: "design_delete",
+      description:
+        "Delete a design and every version of it from this Chat, with the comments on it. Only when the user asks to delete it, for example the variants they did not choose. Its cards in the Chat stay but no longer open it, and its id can't be used again.",
+      input: { id: z.string().regex(ID) },
+      readOnly: false,
+      run: async (args) => JSON.stringify(await api.deleteDesign({ chatId, ...args }, authorization)),
     },
     ...artifactCommentToolDefinitions(chatId, api, authorization),
   ];

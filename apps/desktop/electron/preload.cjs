@@ -23,6 +23,9 @@ const LOCAL_ONLY = [
   "linear:connect",
   "linear:cancel",
   "linear:disconnect",
+  "mcp:save",
+  "mcp:signIn",
+  "mcp:cancelSignIn",
 ];
 const LOCAL_ONLY_PREFIXES = [
   "app:",
@@ -76,6 +79,8 @@ function makeBridge(invoke, listen, send) {
       close: (request) => invoke("browser:close", request),
     },
     terminals: {
+      profiles: () => invoke("terminal:profiles"),
+      setShell: (request) => invoke("terminal:setShell", request),
       list: (request) => invoke("terminal:list", request),
       open: (request) => invoke("terminal:open", request),
       read: (request) => invoke("terminal:read", request),
@@ -102,6 +107,7 @@ function makeBridge(invoke, listen, send) {
       get: (request) => invoke("artifact:get", request),
       list: (request) => invoke("artifact:list", request),
       apply: (request) => invoke("artifact:apply", request),
+      delete: (request) => invoke("artifact:delete", request),
       addComments: (request) => invoke("artifact:add-comments", request),
       comments: (request) => invoke("artifact:comments", request),
     },
@@ -148,6 +154,14 @@ function makeBridge(invoke, listen, send) {
     mcp: {
       accounts: () => invoke("mcp:accounts"),
       check: (provider, accountId) => invoke("mcp:check", provider, accountId),
+      definition: (name, target) => invoke("mcp:definition", name, target),
+      save: (def, target, previous) => invoke("mcp:save", def, target, previous ?? null),
+      saveUrl: (def, target, previous) => invoke("mcp:saveUrl", def, target, previous ?? null),
+      remove: (name, target) => invoke("mcp:remove", name, target),
+      toggle: (provider, accountId, name, on) => invoke("mcp:toggle", provider, accountId, name, on),
+      signIn: (name, accounts) => invoke("mcp:signIn", name, accounts),
+      cancelSignIn: (name) => invoke("mcp:cancelSignIn", name),
+      onChanged: (callback) => listen("mcp:changed", callback),
     },
     localMcp: {
       status: () => invoke("local-mcp:status"),
@@ -219,6 +233,7 @@ function makeBridge(invoke, listen, send) {
     onProjectState: (callback) => listen("project:state", callback),
     sendMessage: (request) => invoke("chat:send", request),
     resumeChat: (projectPath, sessionId) => invoke("chat:resume", projectPath, sessionId),
+    reloadChat: (chatId) => invoke("chat:reload", chatId),
     switchAccountAfterLimit: (projectPath, sessionId, provider, accountId) => invoke("chat:limit-switch", projectPath, sessionId, provider, accountId),
     patchChat: (projectPath, sessionId, patch) => invoke("chat:patch", projectPath, sessionId, patch),
     archiveSubagent: (projectPath, sessionId, id, archived) => invoke("chat:archive-subagent", projectPath, sessionId, id, archived),
@@ -274,7 +289,9 @@ function makeBridge(invoke, listen, send) {
     setKeepAwake: (enabled) => invoke("app:set-keep-awake", enabled),
     getCachedUsage: (scopeKey) => invoke("usage:cached", scopeKey),
     setNotifyWhenWaiting: (on) => invoke("settings:notify-when-waiting", on),
-    setWindowTranslucent: (on, theme, background) => invoke("settings:window-translucent", { on, theme, background }),
+    setNotificationChime: (chime) => invoke("settings:notification-chime", chime),
+    onPlayChime: (callback) => listen("notification:play-chime", callback),
+    setWindowBackground: (background) => invoke("settings:window-background", background),
     syncNotifications: (state) => invoke("notification:state", state),
     getInbox: () => invoke("floating-inbox:snapshot"),
     setFloatingInbox: (on) => invoke("settings:floating-inbox", on),
@@ -408,4 +425,7 @@ const bridge = {
   onComputerAddPending: (callback) => listenHere("computers:pending", () => callback()),
   onComputerEvent: (callback) => listenAnyComputer(callback),
 };
+// Window decoration belongs to this window, even when its Chat uses a paired computer's bridge.
+const controls = process.argv.find((argument) => argument.startsWith("--milagre-window-controls="))?.split("=")[1];
+contextBridge.exposeInMainWorld("milagreWindowChrome", { controls: controls === "leading" || controls === "overlay" ? controls : "external" });
 contextBridge.exposeInMainWorld("milagre", bridge);

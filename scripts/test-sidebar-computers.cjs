@@ -101,7 +101,8 @@ async function browserChecks() {
   const { app, BrowserWindow } = require("electron");
   app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "milagre-sidebar-computers-")));
   await app.whenReady();
-  const window = new BrowserWindow({ width: 1280, height: 760, show: false, webPreferences: { backgroundThrottling: false } });
+  // App waits for the splash animation to finish; a shown window keeps its compositor painting under Xvfb.
+  const window = new BrowserWindow({ width: 1280, height: 760, show: true, webPreferences: { backgroundThrottling: false } });
   const evaluate = (source) => window.webContents.executeJavaScript(source);
   const errors = [];
   window.webContents.on("console-message", (details) => {
@@ -153,12 +154,12 @@ async function browserChecks() {
 
     await evaluate(`document.querySelector('[data-computer-row="c-arketa"] [data-computer-gear]').click()`);
     await waitFor(`document.querySelector('h1')?.textContent === 'arketa' && !!document.querySelector('[data-computer-settings]')`);
-    await evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Back').click()`);
+    await evaluate(`document.querySelector('[aria-label="Settings navigation"] button[aria-label="Back"]').click()`);
     await waitFor(`!!document.querySelector('[data-computers-button]')`);
     await openPopover();
     await evaluate(`document.querySelector('[data-computer-row="this-mac"] [data-computer-gear]').click()`);
     await waitFor(`document.querySelector('h1')?.textContent === 'Devices'`);
-    await evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Back').click()`);
+    await evaluate(`document.querySelector('[aria-label="Settings navigation"] button[aria-label="Back"]').click()`);
     await waitFor(`!!document.querySelector('[data-computers-button]')`);
     console.log("PASS: a computer's gear opens its settings, and This Mac's opens Settings › Devices");
 

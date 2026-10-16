@@ -10,31 +10,58 @@ export type HtmlArtifact = ArtifactSummary & { format: "html"; latest: number; h
 export type Artifact = DesignArtifact | HtmlArtifact;
 export type ArtifactPageKind = "designs" | "artifacts";
 
+/** A public link to a Chat page. Sharing the page again updates the snapshot behind the same link. */
 export interface DesignPageShare {
   kind?: ArtifactPageKind;
   id: string;
   url: string;
   title: string;
+  /** When the link was first published. */
   createdAt: number;
+  /** When the snapshot behind the link was last replaced; absent until the first update. */
+  updatedAt?: number;
   designCount: number;
   revoked?: boolean;
+  /** The upload was never confirmed. Sharing again retries the same link. */
   pending?: boolean;
+  /** Set by sharePage: older links of this page that could not be revoked yet. They stay public, are listed in
+   * Published pages, and the next share retries them. */
+  olderLinks?: number;
 }
 
 export interface ArtifactApi {
   sharingStatus(request?: { kind?: ArtifactPageKind }): Promise<{ available: boolean; reason?: string }>;
   allPageShares(): Promise<DesignPageShare[]>;
   revokeSavedPageShare(request: { id: string }): Promise<void>;
+  /** The page's current link, or none: at most one entry. */
   pageShares(request: { chatId: string; kind?: ArtifactPageKind }): Promise<DesignPageShare[]>;
-  sharePage(request: { chatId: string; title: string; acknowledgePublic: true; kind?: ArtifactPageKind }): Promise<DesignPageShare>;
+  /** The page is named after its Chat on the host; `title` only satisfies hosts from before that, which require one. */
+  sharePage(request: { chatId: string; title?: string; acknowledgePublic: true; kind?: ArtifactPageKind }): Promise<DesignPageShare>;
   revokePageShare(request: { chatId: string; id: string; kind?: ArtifactPageKind }): Promise<void>;
   get(request: { chatId: string; id: string; version?: number }): Promise<Artifact>;
   list(request: { chatId: string; format?: "design" | "html" }): Promise<ArtifactSummary[]>;
   /** Saves an atomic batch against the version the editor loaded. A stale version leaves the design unchanged. */
   apply(request: { chatId: string; id: string; expectedVersion: number; operations: DesignOperation[] }): Promise<DesignArtifact>;
+  /** Deletes a design with every version and the comments on it. Its id is never reused. */
+  delete(request: { chatId: string; id: string }): Promise<{ id: string }>;
   /** Records comments the user is sending; returns them with their ids. */
   addComments(request: { chatId: string; comments: DesignComment[] }): Promise<ArtifactComment[]>;
   comments(request: { chatId: string }): Promise<ArtifactComment[]>;
+}
+
+/**
+ * Designs as the canvas lays them out: one row per group, the groups and the designs in each in the order they first
+ * appear. Designs without a group share a row of their own, where the first of them appears.
+ */
+export function designGroups<T extends { group?: string }>(designs: readonly T[]): { group: string | null; designs: T[] }[] {
+  const rows = new Map<string | null, T[]>();
+  for (const design of designs) {
+    const group = design.group?.trim() || null;
+    const row = rows.get(group);
+    if (row) row.push(design);
+    else rows.set(group, [design]);
+  }
+  return [...rows].map(([group, members]) => ({ group, designs: members }));
 }
 
 /** A comment on a design: where on it (fractions of its screen) when it was pinned, and what the user wrote. */
@@ -166,7 +193,16 @@ export function chosenDesign(bodies: string[]): { id: string; version: number } 
   return null;
 }
 
-export { ARTIFACT_CSP, ARTIFACT_ESCAPE, ARTIFACT_ESCAPE_SCRIPT, artifactDocument, artifactShell } from "./artifact-document.mjs";
+export {
+  ARTIFACT_CSP,
+  ARTIFACT_ESCAPE,
+  ARTIFACT_SEND,
+  ARTIFACT_ESCAPE_SCRIPT,
+  DESIGN_CANVAS_SCRIPT,
+  artifactDocument,
+  artifactShell,
+  designCanvasShell,
+} from "./artifact-document.mjs";
 
 /** The step the transcript shows for the agent resolving a design comment (core's agents/steps.cjs names it). */
 export const RESOLVED_STEP = "Resolved a design comment";

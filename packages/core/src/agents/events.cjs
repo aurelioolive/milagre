@@ -7,6 +7,9 @@ const { isTurnEnd: isTerminal } = require("@milagre/shared/agent-runs");
 
 const { applyToolResult, applyToolUse, codexPlanTasks } = require("./tasks.cjs");
 const { claudeStep, claudeStepResult, codexStep, codexStepResult, thinkingEnd, thinkingStep } = require("./steps.cjs");
+const { claudeDesignDrafts } = require("./design-drafts.cjs");
+// The Milagre tools whose results are the Chat's designs and artifact page, whichever agent calls them.
+const SUBAGENT_ARTIFACT_TOOLS = /^mcp__milagre__(design_show|design_apply|artifact_show)$/;
 
 const { BUNDLED_SKILLS_DIRECTORY, bundledWritingInstructions } = require("../bundled-skills.cjs");
 const TLDR_INSTRUCTIONS = bundledWritingInstructions();
@@ -17,6 +20,13 @@ const LINKS_INSTRUCTIONS = [
   "When both sides must agree on something first (an API shape, a contract), open a Negotiation with delegate(negotiation: true). Each report then starts the other side's next turn, for up to 10 rounds; call conclude_negotiation(summary) once you agree. A turn handling a Delegation can't delegate, except inside a Negotiation.",
 ].join(" ");
 
+// What a Claude subagent is told as it starts (claude-provider.cjs, SubagentStart): it doesn't see the parent's system
+// prompt, and a custom agent with its own tool list may not have Milagre's tools at all.
+// Every Claude subagent gets this one: its to-do list is what the user reads in the Subagents panel.
+const SUBAGENT_PLAN_INSTRUCTIONS =
+  "Milagre shows the user your to-do list in the Chat's Subagents panel. For work with three or more steps, write a short to-do list with your todo tool (TodoWrite) before you start, and mark each item in_progress then completed as you go. Never use the milagre tasks_set, task_update or phase_set tools: they are the parent Chat's plan, not yours.";
+const SUBAGENT_DESIGN_INSTRUCTIONS = `Milagre Designs: this Chat has a Designs canvas. For any UI, screen, mockup or visual design, use the milagre design_show tool (design_apply to revise, keeping the design's id), so the design lands on the Chat's canvas, where the user watches and reviews it. Never write HTML or image files for it. Before your first design, read ${path.join(BUNDLED_SKILLS_DIRECTORY, "design", "SKILL.md")}. Without those tools, don't build the UI another way: describe it in your reply so the agent that started you shows it with design_show.`;
+
 function milagreInstructions(tldrEnabled = true, workspaceInstructions = "", designsEnabled = true) {
   return [
     "You are an agent inside Milagre, an agent development environment. Answer the user concisely and humanly. Do not claim to have changed files unless you actually did.",
@@ -25,13 +35,14 @@ function milagreInstructions(tldrEnabled = true, workspaceInstructions = "", des
       : "Automatic TLDR writing is disabled in Settings. Do not carry forward previously applied automatic TLDR rules. Explicit /tldr requests and the user's own writing preferences still apply.",
     "Milagre folds your thinking away and the user rarely opens it. Anything they need to read (an answer, findings, the reason behind a question) goes in your reply text, written before you ask a question or end the turn. Never leave a summary or a conclusion meant for the user only in your thinking: if you catch yourself drafting one there, write it as reply text before the next tool call.",
     "When you need the user to choose between options, ask with your question tool if you have one (AskUserQuestion or request_user_input); otherwise ask in your reply as a short numbered list.",
+    "Tasks: for work with several steps, write the plan with milagre tasks_set (nested up to 3 levels), mark each subtask in_progress then completed with task_update as you go, and call phase_set when the work moves to a new phase (plan, build, test, review, merge, release, done). The user follows these in the Chat's Tasks pill. Do not also keep the list in your own todo or plan tool.",
     LINKS_INSTRUCTIONS,
     "Linear: when you have the milagre linear_issue, linear_search and linear_file tools, Milagre is already signed in to the user's Linear workspaces. Read issues, comments and uploaded images with them, not with a Linear MCP, connector or the Linear CLI. If one says a workspace isn't connected, tell the user to add it in Milagre's Settings › Experimental › Linear.",
     "Simulators: use milagre simulator_list, simulator_attach and simulator_detach to manage devices for this Chat. After choosing a simulator for mobile work, attach its exact deviceId so the user can view it. The bundled simulator skill has the workflow. Discovery never attaches devices; detach leaves them running.",
     "Browsers: a Chromium browser this Chat's agent starts with a loopback DevTools port appears in the Chat's Browser pill on desktop and phone by itself, through process lineage. One that lineage cannot see (a browser daemon, one opened with open or from a shell that exited, or one the user started) joins only after milagre browser_attach with an id from browser_list. Attach the browser you drive so the user can watch it. The bundled browser skill has the workflow. Listing never captures; browser_detach leaves the browser running.",
     `Artifacts: when the user wants a page explaining something, a report or an interactive explainer, use milagre artifact_show with self-contained HTML. Each Chat has one live artifact page; later calls update that same page in place, with no variants or browsable version history. Read it with artifact_read, or find its id with artifact_list. Artifacts remain available when Designs is off. Use Designs for UI screens, mockups and visual design work. Once you address a comment, resolve it with artifact_resolve_comment. Before creating an artifact, read ${path.join(BUNDLED_SKILLS_DIRECTORY, "artifacts", "SKILL.md")}.`,
     designsEnabled
-      ? `Designs: when the user asks to see a UI, screen, mockup or visual design, create an editable document with milagre design_show. It has named layers for frames, text, shapes and images, plus layout and color tokens. Set the document's width and height for the screen (390 by 844 for a phone). The Chat shows a card and a canvas for reviewing and choosing designs. The user can edit layers on desktop. On phone they request changes through Chat; there is no layer editor. Read the latest document with design_read before revising it, then use design_apply with its expectedVersion and a batch of operations on stable layer ids. A version conflict means the user or another edit changed it: read again before applying your intended edits. To offer variants, use a different id for each. Once you address a comment, resolve its id with artifact_resolve_comment and a short note. Before your first design in a Chat, read the bundled design skill at ${path.join(BUNDLED_SKILLS_DIRECTORY, "design", "SKILL.md")}: it has the document format and process. When the user names another design tool for the work (Pencil, Figma, Paper or any other MCP or app), use that tool and do not call design_show for it, even if the request also matches this one.`
+      ? `Designs: when the user asks to see a UI, screen, mockup or visual design, create an editable document with milagre design_show. It has named layers for frames, text, shapes, icons and images, plus layout and color tokens. Each design_show and design_apply result includes the saved design rendered as an image, with layout warnings; check both before you reply. Set the document's width and height for the screen (390 by 844 for a phone). When the Chat covers several parts of the app, set group to the part each design belongs to (Onboarding, Settings); the canvas lays out one block per group. The Chat shows a card and a canvas for reviewing and choosing designs. The user can edit layers on desktop. On phone they request changes through Chat; there is no layer editor. Read the latest document with design_read before revising it, then use design_apply with its expectedVersion and a batch of operations on stable layer ids. A version conflict means the user or another edit changed it: read again before applying your intended edits. To offer variants, use a different id for each. Once you address a comment, resolve its id with artifact_resolve_comment and a short note. Before your first design in a Chat, read the bundled design skill at ${path.join(BUNDLED_SKILLS_DIRECTORY, "design", "SKILL.md")}: it has the document format and process. When the user names another design tool for the work (Pencil, Figma, Paper or any other MCP or app), use that tool and do not call design_show for it, even if the request also matches this one.`
       : "Designs are off in this host's Settings > Experimental. Design tools and the Designs canvas are unavailable. Do not attempt to create, read or revise a Milagre design, or use an HTML artifact fallback. Continue other requested work normally.",
     `Native UI: a reply can carry tables, metrics, callouts, progress, bar and line charts, and buttons the user taps to send a message, as a fenced block whose info string is \`openui\`, written in OpenUI Lang. Milagre renders it inline on desktop and phone. Before your first block in a Chat, read the bundled genui skill at ${path.join(BUNDLED_SKILLS_DIRECTORY, "genui", "SKILL.md")}: it has the syntax and the components. Use it for results with several attributes, numbers, a status or a choice; not for code or prose.`,
     ...(workspaceInstructions ? [workspaceInstructions] : []),
@@ -198,6 +209,7 @@ function mapClaudeMessage(message, state) {
       state.thinking = { id: `thinking-${state.thinkingCount}`, index: event.index, text: "", startedAt: now(state) };
       events.push({ type: "step-started", step: thinkingStep(state.thinking.id) });
     }
+    events.push(...claudeDesignDrafts(event, state));
     const thinking = state.thinking;
     if (thinking && event.index === thinking.index && event.type === "content_block_delta" && event.delta?.type === "thinking_delta" && event.delta.thinking) {
       thinking.text += event.delta.thinking;
@@ -206,6 +218,26 @@ function mapClaudeMessage(message, state) {
     if (thinking && event.index === thinking.index && event.type === "content_block_stop") {
       state.thinking = null;
       events.push({ type: "step-completed", ...thinkingEnd(thinking.id, now(state) - thinking.startedAt, thinking.text) });
+    }
+  }
+  // A subagent's design calls (it can't stream them yet, see design-drafts.cjs) are the Chat's designs too: they show
+  // as artifact steps of the reply, named for the subagent, so the canvas opens and plays each saved version back.
+  if (message.type === "stream_event" && message.parent_tool_use_id != null)
+    events.push(...claudeDesignDrafts(message.event ?? {}, state, message.parent_tool_use_id));
+  if (message.type === "assistant" && message.parent_tool_use_id != null) {
+    for (const block of message.message?.content ?? []) {
+      if (block?.type !== "tool_use" || !SUBAGENT_ARTIFACT_TOOLS.test(String(block.name))) continue;
+      state.subagentArtifacts ??= new Map();
+      state.subagentArtifacts.set(block.id, block);
+      events.push({ type: "step-started", step: { ...claudeStep(block.id, block.name, block.input), agent: message.parent_tool_use_id } });
+    }
+  }
+  if (message.type === "user" && message.parent_tool_use_id != null && Array.isArray(message.message?.content)) {
+    for (const block of message.message.content) {
+      const call = block?.type === "tool_result" ? state.subagentArtifacts?.get(block.tool_use_id) : undefined;
+      if (!call) continue;
+      state.subagentArtifacts.delete(block.tool_use_id);
+      events.push({ type: "step-completed", ...claudeStepResult(call, block) });
     }
   }
   if (message.type === "assistant" && message.parent_tool_use_id == null) {
@@ -281,14 +313,31 @@ function claudeContextUsage(state, used) {
 // codex app-server notification -> events. Everything not listed is ignored on purpose:
 // the server also reports MCP startup, hooks and the turn's running diff. Rate limits are only kept for the reset
 // time of a turn the plan's usage limit stops.
+function codexSubagentArtifact(method, params, state) {
+  const item = params.item;
+  const tool = item?.type === "mcpToolCall" && item.server === "milagre" ? item.tool : null;
+  if (!["item/started", "item/completed"].includes(method) || !state.subagents?.has(params.threadId) || !SUBAGENT_ARTIFACT_TOOLS.test(`mcp__milagre__${tool}`))
+    return [];
+  const step = { ...codexStep(item), agent: params.threadId };
+  state.steps ??= new Set();
+  if (method === "item/started") {
+    if (state.steps.has(step.id)) return [];
+    state.steps.add(step.id);
+    return [{ type: "step-started", step }];
+  }
+  const started = state.steps.delete(step.id) ? [] : [{ type: "step-started", step }];
+  return [...started, { type: "step-completed", ...codexStepResult(item) }];
+}
+
 function mapCodexNotification(method, params, state) {
   if (method === "account/rateLimits/updated") {
     state.rateLimits = params.rateLimits;
     return [];
   }
   const children = codexSubagents(method, params, state);
+  // A subagent's design calls are the Chat's designs too, as for Claude: artifact steps named for the subagent.
+  if (params.threadId && state.threadId && params.threadId !== state.threadId) return [...children, ...codexSubagentArtifact(method, params, state)];
   if (children.length) return children;
-  if (params.threadId && state.threadId && params.threadId !== state.threadId) return [];
   if (method === "turn/started") return [{ type: "turn-started", turnId: params.turn?.id ?? null }];
   // The last request's tokens are what the context window holds now.
   if (method === "thread/tokenUsage/updated") {
@@ -385,6 +434,8 @@ function codexReasoning(method, item, state) {
 
 module.exports = {
   MILAGRE_INSTRUCTIONS,
+  SUBAGENT_DESIGN_INSTRUCTIONS,
+  SUBAGENT_PLAN_INSTRUCTIONS,
   milagreInstructions,
   RESUME_FAILED_MESSAGE,
   cliBrokenMessage,

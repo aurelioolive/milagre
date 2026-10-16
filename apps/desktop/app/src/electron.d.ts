@@ -1,5 +1,5 @@
 import type { MainSyncSettings, MainSyncStatus } from "@milagre/shared/main-sync";
-import type { McpAccount, McpAccountCheck } from "@milagre/shared/mcp";
+import type { McpAccount, McpAccountCheck, McpChangedEvent, McpProvider, McpServerDefinition, McpTarget } from "@milagre/shared/mcp";
 import type { LocalMcpApi } from "@milagre/shared/local-mcp";
 import type { LinearIssue, LinearIssuesResult, LinearStatus } from "@milagre/shared/linear";
 import type {
@@ -275,7 +275,15 @@ export type MilagreBridge = {
   onLinearStatusChanged: (callback: (status: LinearStatus) => void) => () => void;
   mcp: {
     accounts: () => Promise<McpAccount[]>;
-    check: (provider: McpAccount["provider"], accountId: string) => Promise<McpAccountCheck>;
+    check: (provider: McpProvider, accountId: string) => Promise<McpAccountCheck>;
+    definition: (name: string, target: McpTarget) => Promise<McpServerDefinition | null>;
+    save: (def: McpServerDefinition, target: McpTarget, previous?: { name: string; target: McpTarget }) => Promise<void>;
+    saveUrl: (def: McpServerDefinition, target: McpTarget, previous?: { name: string; target: McpTarget }) => Promise<void>;
+    remove: (name: string, target: McpTarget) => Promise<void>;
+    toggle: (provider: McpProvider, accountId: string, name: string, on: boolean) => Promise<void>;
+    signIn: (name: string, accounts: { provider: McpProvider; accountId: string }[]) => Promise<{ started: true }>;
+    cancelSignIn: (name: string) => Promise<void>;
+    onChanged: (callback: (event: McpChangedEvent) => void) => () => void;
   };
   localMcp: LocalMcpApi;
   /** The Experimental Linear switch changed, on this Mac or from a phone. */
@@ -377,6 +385,8 @@ export type MilagreBridge = {
   sendMessage: (request: ChatSendRequest) => Promise<{ sessionId: number }>;
   /** Continues a chat a quit stopped mid-turn, on its saved options. Resolves false when it has nothing to continue. */
   resumeChat: (projectPath: string, sessionId: number) => Promise<boolean>;
+  /** Stops a running turn and ends the chat's agent process; the next message resumes its session in a new one. */
+  reloadChat: (chatId: string) => Promise<void>;
   /** The limit card: moves the Chat's Project to `accountId`, then continues the Chat there (`continued` false: send again). */
   switchAccountAfterLimit: (
     projectPath: string,
@@ -479,8 +489,11 @@ export type MilagreBridge = {
   getCachedUsage: (scopeKey?: string) => Promise<UsageSnapshot>;
   /** Whether a chat that waits on the user while Milagre is in the background gets a system notification. */
   setNotifyWhenWaiting: (on: boolean) => Promise<void>;
+  /** The Experimental notification chime: a chat's notification goes silent and the window plays it (onPlayChime). */
+  setNotificationChime: (chime: import("@milagre/shared/notification-chimes").NotificationChime) => Promise<void>;
+  onPlayChime: (callback: (chime: string) => void) => () => void;
   /** Whether the window lets the blurred desktop show through (macOS). `theme` picks the blur material. */
-  setWindowTranslucent: (on: boolean, theme: "light" | "dark", background: string) => Promise<void>;
+  setWindowBackground: (background: string) => Promise<void>;
   /** The open project's unread chats and the notification settings, for completion alerts and the Dock badge. */
   syncNotifications: (state: {
     projectPath: string;
@@ -523,6 +536,7 @@ export type MilagreBridge = {
 
 declare global {
   interface Window {
+    milagreWindowChrome?: { controls: "leading" | "overlay" | "external" };
     milagre: MilagreBridge & {
       /** The same calls on a paired computer, carried there by main; this Mac's own actions refuse with "Not available on a remote computer". */
       on: (computerId: string) => MilagreBridge;

@@ -200,11 +200,13 @@ async function startFixture({ port = 8794, metroPort = 8894, root: resumeRoot } 
             if (!edit) throw new Error("The design_apply tool was not installed in the fixture.");
             const result = await runTool(edit, {
               id: "fieldnotes",
-              expectedVersion: JSON.parse(first.text).version,
+              expectedVersion: JSON.parse(first.text.split("\n", 1)[0]).version,
               operations: [{ op: "update", id: "practice-title", patch: { text: "A little more outside." } }],
             });
             if (result.isError) throw new Error(result.text);
-            shown = JSON.parse(result.text);
+            // The summary is the first line; the rest is notes for the agent.
+            const { warnings: _warnings, warningCount: _count, ...summary } = JSON.parse(result.text.split("\n", 1)[0]);
+            shown = summary;
           }
           options.emit({ type: "step-started", step: { id: "design-preview", kind: "artifact", title: "Created Fieldnotes", artifact: shown } });
           options.emit({ type: "step-completed", id: "design-preview", status: "done", artifact: shown });

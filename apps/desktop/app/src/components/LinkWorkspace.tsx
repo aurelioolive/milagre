@@ -14,6 +14,7 @@ import { isLean } from "../lib/state-events";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import type { AgentPorts, LinkState, OpenLink, WorktreeBinding } from "@milagre/shared/model";
 import { chatKeyForScope, scopeKey } from "@milagre/shared/chat-scopes";
+import { showNotice } from "../lib/notice";
 import { chatTitle } from "@milagre/shared/chats";
 import { attentionLabel, chatsNeedingAttention, waitingFor } from "@milagre/shared/attention";
 import { useSettings } from "../lib/settings";
@@ -405,9 +406,9 @@ export function LinkWorkspace({
               <p className="mt-1 text-ink-2">Your draft is kept here. Messages will be available when the host reconnects.</p>
             </div>
           )}
-          <div aria-hidden className="title-drag fixed inset-x-0 top-0 z-50 h-10" />
+          <div aria-hidden className="title-drag fixed inset-x-0 top-0 z-50 h-[var(--window-chrome-height)]" />
           <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-hidden text-ink">
-            <div className="flex min-h-0 shrink-0 pt-[60px] pb-3 pl-3">
+            <div className="flex min-h-0 shrink-0 pt-[var(--window-chrome-height)] pb-3 pl-3">
               <SidebarNav
                 fill
                 attentionPaths={attentionPaths}
@@ -440,6 +441,11 @@ export function LinkWorkspace({
                 chatActions={{
                   onRename: (id, title) => void bridge.patchChat(owner, Number(id), { title }).catch((error) => setError(ipcErrorMessage(error))),
                   onMarkUnread: (id, unread) => void bridge.patchChat(owner, Number(id), { unread }),
+                  onReload: (id) =>
+                    void bridge
+                      .reloadChat(chatKeyForScope(scope, Number(id)))
+                      .then(() => showNotice("Chat reloaded. Your next message starts a fresh agent."))
+                      .catch((error) => setError(ipcErrorMessage(error))),
                   remote: isRemoteKey(owner),
                   onReveal: isRemoteKey(owner)
                     ? undefined
@@ -537,7 +543,7 @@ export function LinkWorkspace({
                         runStartedAt={run?.startedAt}
                         runModelName={run?.model}
                         sessionProvider={session?.provider}
-                        tasks={run?.tasks}
+                        plan={session?.plan}
                         contextUsage={run?.contextUsage ?? session?.contextUsage}
                         subagents={session?.subagents?.filter((agent) => agent.id !== session.native_session_id)}
                         ports={chatId ? ports[chatId] : undefined}

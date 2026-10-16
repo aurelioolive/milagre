@@ -172,7 +172,7 @@ const scripts = {
 // Scripts get the query options (for canUseTool), an abort signal that interrupt() trips, a gate
 // the test opens with calls.release(), and next() to read a message sent while they run.
 function fakeSdk(script) {
-  const calls = { options: null, queries: 0, prompts: [], models: [], modes: [], thinking: [], flags: [], interrupts: 0, release: () => {} };
+  const calls = { order: [], options: null, queries: 0, prompts: [], models: [], modes: [], thinking: [], flags: [], interrupts: 0, release: () => {} };
   const query = ({ prompt, options }) => {
     calls.queries += 1;
     calls.options = options;
@@ -187,7 +187,10 @@ function fakeSdk(script) {
     const messages = prompt[Symbol.asyncIterator]();
     const next = async () => {
       const { value } = await messages.next();
-      if (value) calls.prompts.push(value);
+      if (value) {
+        calls.prompts.push(value);
+        calls.order.push("message");
+      }
       return value;
     };
     async function* run() {
@@ -210,6 +213,10 @@ function fakeSdk(script) {
       },
       setMaxThinkingTokens: async (...args) => {
         calls.thinking.push(args);
+      },
+      toggleMcpServer: async (name, enabled) => {
+        (calls.toggles ??= []).push([name, enabled]);
+        calls.order.push(`toggle:${name}`);
       },
     });
   };
@@ -254,6 +261,14 @@ test("analysis-only Claude denies shell tools and cannot switch to Full", async 
   await session.startTurn({ ...TURN, permissionMode: "full" });
   await ended(events, 2);
   assert.equal(calls.modes.includes("bypassPermissions"), false);
+});
+
+test("turns on Claude Code's task tools, which headless runs hide", async (t) => {
+  const { session, events, calls } = claude(t);
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.equal(calls.options.env.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+  assert.equal(calls.options.env.PATH, process.env.PATH);
 });
 
 test("starts with Milagre's options and streams a reply", async (t) => {
@@ -1106,4 +1121,102 @@ test("a Chat's linked tools are served in-process and allowed without Claude's o
   assert.deepEqual(sdk.calls.options.allowedTools, ["mcp__milagre__linked_overview"]);
   assert.equal(made[0].tools[0].extras.annotations.readOnlyHint, true);
   assert.deepEqual(await made[0].tools[0].handler({}), { content: [{ type: "text", text: "summary of web" }], isError: false });
+});
+
+test("Everywhere servers join mcpServers and off servers are toggled after init", async (t) => {
+  const sdk = fakeSdk(scripts.reply);
+  const events = [];
+  const session = new ClaudeSession({
+    cwd: "/repo",
+    command: "/usr/local/bin/claude",
+    emit: (event) => events.push(event),
+    mcpExtras: async () => ({ servers: [{ name: "linear", type: "http", url: "https://x", headers: {} }], off: ["figma"] }),
+    loadSdk: sdk.loadSdk,
+  });
+  t.after(() => session.close());
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.deepEqual(sdk.calls.options.mcpServers.linear, { type: "http", url: "https://x" });
+  // Switched off before the first message reaches Claude Code, and once more on init as a second try.
+  assert.deepEqual(sdk.calls.toggles, [
+    ["figma", false],
+    ["figma", false],
+  ]);
+  assert.ok(sdk.calls.order.indexOf("toggle:figma") < sdk.calls.order.indexOf("message"));
+});
+
+test("analysis-only Claude gets no Everywhere servers, and a failing mcpExtras still starts the Chat", async (t) => {
+  const sdk = fakeSdk(scripts.reply);
+  const events = [];
+  const session = new ClaudeSession({
+    cwd: "/repo",
+    command: "/usr/local/bin/claude",
+    analysisOnly: true,
+    emit: (event) => events.push(event),
+    mcpExtras: async () => ({ servers: [{ name: "linear", type: "http", url: "https://x", headers: {} }], off: ["figma"] }),
+    loadSdk: sdk.loadSdk,
+  });
+  t.after(() => session.close());
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.equal(sdk.calls.options.mcpServers?.linear, undefined);
+  assert.equal(sdk.calls.toggles, undefined);
+
+  const warn = t.mock.method(console, "warn", () => {});
+  const failing = fakeSdk(scripts.reply);
+  const failEvents = [];
+  const second = new ClaudeSession({
+    cwd: "/repo",
+    command: "/usr/local/bin/claude",
+    emit: (event) => failEvents.push(event),
+    mcpExtras: async () => {
+      throw new Error("boom");
+    },
+    loadSdk: failing.loadSdk,
+  });
+  t.after(() => second.close());
+  await second.startTurn(TURN);
+  await ended(failEvents);
+  assert.equal(failing.calls.queries, 1);
+  // The failure is logged once, with its message, instead of being swallowed.
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0].arguments.join(" ")), /boom/);
+});
+
+test("Claude's subagents are told to keep a to-do list as they start, and to design on the Chat's canvas with Designs on", async (t) => {
+  const { SUBAGENT_DESIGN_INSTRUCTIONS, SUBAGENT_PLAN_INSTRUCTIONS } = require("./events.cjs");
+  const design = { name: "design_show", description: "Show", input: {}, readOnly: false, run: async () => "" };
+  for (const [designsEnabled, tools, designs] of [
+    [true, [design], true],
+    [false, [design], false],
+    [true, [], false],
+  ]) {
+    const sdk = fakeSdk(scripts.reply);
+    const loadSdk = async () => ({
+      ...(await sdk.loadSdk()),
+      tool: (name, description, input, handler, extras) => ({ name, description, input, handler, extras }),
+      createSdkMcpServer: (options) => ({ type: "sdk", name: options.name, instance: {} }),
+    });
+    const events = [];
+    const session = new ClaudeSession({
+      cwd: "/repo",
+      command: "/usr/local/bin/claude",
+      designsEnabled,
+      linked: { tools },
+      emit: (event) => events.push(event),
+      loadSdk,
+    });
+    t.after(() => session.close());
+    await session.startTurn(TURN);
+    await ended(events);
+    const hook = sdk.calls.options.hooks?.SubagentStart?.[0]?.hooks?.[0];
+    assert.deepEqual(await hook({ hook_event_name: "SubagentStart", agent_id: "a", agent_type: "general-purpose" }), {
+      hookSpecificOutput: {
+        hookEventName: "SubagentStart",
+        additionalContext: designs ? `${SUBAGENT_PLAN_INSTRUCTIONS}\n\n${SUBAGENT_DESIGN_INSTRUCTIONS}` : SUBAGENT_PLAN_INSTRUCTIONS,
+      },
+    });
+  }
+  assert.match(SUBAGENT_DESIGN_INSTRUCTIONS, /design_show.*Never write HTML or image files/s);
+  assert.match(SUBAGENT_PLAN_INSTRUCTIONS, /TodoWrite.*Never use the milagre tasks_set/s);
 });

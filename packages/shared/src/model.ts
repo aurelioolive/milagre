@@ -125,6 +125,8 @@ export interface AgentSession {
   /** Session ids of the providers this chat is not on right now, so switching back resumes them. */
   native_sessions?: Partial<Record<ModelProvider, string>>;
   subagents?: Subagent[];
+  /** The Chat's task list and phase history (chat-plan.mjs); absent until an agent writes one. */
+  plan?: ChatPlan;
   /** Automatic title from the first message; a manual title takes precedence. */
   generatedTitle?: string;
   /** Persisted until background naming finishes, including across restarts. */
@@ -300,6 +302,9 @@ export type WorktreeLinkedContext = {
   summary?: string;
 };
 
+/** Where the user reloaded the Chat's agent: its process ended, and the next turn resumes the session in a new one. */
+export type ChatReloadContext = { kind: "reload" };
+
 export type ChatContext =
   | AdvisorResultContext
   | WorktreeLinkedContext
@@ -310,6 +315,8 @@ export type ChatContext =
   | PullRequestActionContext
   | LinearIssueContext
   | UsageLimitContext
+  | AccountSwitchContext
+  | ChatReloadContext
   | "handover"
   | null;
 
@@ -368,6 +375,8 @@ export interface ArtifactRef {
   title: string;
   /** Older transcript entries have no format; resolve them through the host's catalog. */
   format?: "design" | "html";
+  /** The part of the app a design belongs to; the canvas lays out one row per group. */
+  group?: string;
 }
 
 /** One tool call in an agent's reply (a `setup` step is the worktree's setup command, which Milagre ran, not the agent) (a command, an edit, a read, a search or another tool), or a stretch of its thinking. */
@@ -397,6 +406,10 @@ export interface ChatStep {
   offset?: number;
   /** For an artifact step, the design it showed. */
   artifact?: ArtifactRef;
+  /** For an artifact step, the Milagre tool it called: the Designs canvas opens when a design tool starts. */
+  tool?: "design_show" | "design_apply" | "artifact_show";
+  /** For an artifact step a subagent made, the subagent: the id of the Agent call that started it (Subagent.id). */
+  agent?: string;
 }
 
 export interface ImageAttachment {
@@ -495,6 +508,10 @@ export interface Subagent {
   endedAt?: number;
   latestActivity?: string;
   communications?: SubagentCommunication[];
+  /** The subagent's own to-do list (its TodoWrite, task tools or Codex plan), when it keeps one. */
+  tasks?: AgentTask[];
+  /** Running totals over its whole transcript, kept by the host (subagent-glance.mjs). */
+  progress?: SubagentProgress;
   transcript: SubagentTranscriptEntry[];
   /**
    * How many entries the transcript has, when `transcript` holds only its last ones (a client that reads transcripts on
@@ -507,7 +524,12 @@ export interface Subagent {
    */
   detailsOnDemand?: true;
 }
-export type SubagentTranscriptEntry = { id: string; kind: "tool" | "message"; text: string };
+/** `tool` is a tool call's step kind, when the host knew it. */
+export type SubagentTranscriptEntry = { id: string; kind: "tool" | "message"; text: string; tool?: StepKind };
+/** What a subagent's tool calls count under in its panel (subagent-glance.mjs). */
+export type ToolCategory = "commands" | "images" | "reads" | "searches" | "edits" | "other";
+/** How many steps a subagent has taken (things it said), the first sentence of the last, and its tool calls per category. */
+export type SubagentProgress = { steps: number; said?: string; tools: Partial<Record<ToolCategory, number>> };
 
 /** One item of the agent's to-do list. */
 export interface AgentTask {
@@ -516,6 +538,38 @@ export interface AgentTask {
   /** Present-continuous wording for while the task is in progress ("Running tests"). */
   activeForm?: string;
   status: "pending" | "in_progress" | "completed";
+}
+
+/** A Chat task's state. A parent's is derived from its subtasks (chat-plan.mjs). */
+export type ChatTaskStatus = "pending" | "in_progress" | "completed";
+
+/** One item of a Chat's task list, at most three levels deep. Ids are Milagre's: "1", "1.2", "1.2.1". */
+export interface ChatTask {
+  id: string;
+  title: string;
+  /** Present-continuous wording shown while in progress ("Saving wishlist changes"). */
+  activeForm?: string;
+  status: ChatTaskStatus;
+  children?: ChatTask[];
+}
+
+/** Where a Chat's work is, set by the agent with phase_set. In graph row order, bottom to top. */
+export type ChatPhase = "start" | "plan" | "build" | "test" | "review" | "merge" | "release" | "done";
+
+export interface ChatPhaseEntry {
+  phase: ChatPhase;
+  /** When the agent moved to this phase, in milliseconds since epoch. */
+  at: number;
+}
+
+/** A Chat's task list and phase history. Lives on the session, so it outlasts turns and restarts. */
+export interface ChatPlan {
+  /** "milagre" once tasks_set or task_update wrote it; "native" while it mirrors the provider's own todo list. */
+  source: "milagre" | "native";
+  tasks: ChatTask[];
+  /** Oldest first, at most 200; the last is the current phase. */
+  phases: ChatPhaseEntry[];
+  updatedAt: number;
 }
 
 /** A TCP port a chat's commands listen on, such as a dev server. */
@@ -535,12 +589,14 @@ export type AgentPorts = Record<string, AgentPort[]>;
 
 export type AgentEvent =
   /** Milagre's own event: the user's message was saved, so a turn starts, or a running one is steered and its reply split. */
-  | { type: "message-sent"; model: string }
+  | { type: "message-sent"; model: string; permissionMode?: PermissionMode }
   /** Milagre's own event: the user's answers to a question were saved as their message, after the reply so far. */
   | { type: "answers-sent" }
   | { type: "subagent-update"; agent: Subagent }
   | { type: "subagents-waiting"; waiting: boolean }
   | { type: "tasks-updated"; tasks: AgentTask[] }
+  /** Milagre's own event: a task tool changed the Chat's plan; null clears it. */
+  | { type: "plan-updated"; plan: ChatPlan | null }
   | ({ type: "context-usage" } & ContextUsage)
   | { type: "context-compacting" }
   /** The provider compacted the conversation: token counts when reported; `manual` when `/compact` asked for it. */
@@ -551,8 +607,14 @@ export type AgentEvent =
   | { type: "turn-started"; turnId: string | null; continues?: string }
   /** `startsMessage`: a provider message boundary, distinct from a streamed paragraph break. */
   | { type: "text-delta"; messageId: string | null; text: string; startsMessage?: boolean }
-  | { type: "step-started"; step: Pick<ChatStep, "id" | "kind" | "title" | "detail" | "file"> }
+  | { type: "step-started"; step: Pick<ChatStep, "id" | "kind" | "title" | "detail" | "file" | "tool" | "agent"> }
   | { type: "step-output"; id: string; text: string }
+  /**
+   * Claude's input to a Milagre design tool while the model writes it (design-drafts.cjs), for the Designs canvas to
+   * build the design live: `text` continues the input at `offset`, `done` once it is whole. `id` is the step's; `agent`
+   * the subagent writing it, if one is. Not saved.
+   */
+  | { type: "step-draft"; id: string; tool: "design_show" | "design_apply"; offset: number; text: string; done?: boolean; agent?: string }
   | { type: "step-completed"; id: string; status: "done" | "failed"; title?: string; note?: string; detail?: string; durationMs?: number; file?: string }
   | ({ type: "permission-request" } & PermissionRequest)
   | { type: "permission-resolved"; requestId: string; decision: PermissionDecision | "cancelled" }
@@ -576,6 +638,9 @@ export interface UsageLimit {
 
 /** A reply the plan's usage limit stopped: the Chat offers the Project's other Accounts for the provider. */
 export type UsageLimitContext = { kind: "limit" } & UsageLimit;
+
+/** The message that continued a Chat on another account after the usage limit, shown as a line like a handoff. `label` names the account. */
+export type AccountSwitchContext = { kind: "account-switch"; provider: ModelProvider; label: string };
 
 /** A message for a chat. The main process saves it, then starts or steers the chat's turn. */
 export interface ChatSendRequest {

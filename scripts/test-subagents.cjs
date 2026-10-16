@@ -209,11 +209,11 @@ async function browserChecks() {
     await assertMainGutters();
     assert.equal(await evaluate('document.querySelector("[data-slot=subagent-track]").textContent.includes("active")'), false);
     assert.equal(await evaluate('document.querySelector("[data-slot=subagent-track]").textContent.includes("failed")'), false);
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
-    await waitFor('!!document.querySelector("[data-slot=subagent-popover]")');
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"');
     assert.equal(await evaluate('document.querySelectorAll("dialog[open], [aria-modal=true]").length'), 0);
     assert.equal(await evaluate('document.querySelectorAll("[data-subagent-row]").length'), 2);
-    assert.ok(await evaluate('document.querySelector("[data-slot=subagent-track] > button").getBoundingClientRect().height <= 24'));
+    assert.ok(await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").getBoundingClientRect().height <= 24'));
     const rowPosition = await evaluate(
       '(() => {const r=document.querySelector("[data-subagent-row]").getBoundingClientRect();return {x:Math.round(r.right-38),y:Math.round(r.top+r.height/2)}})()',
     );
@@ -249,7 +249,7 @@ async function browserChecks() {
       "Canvas uses the app background without adding another grid",
     );
     assert.equal(
-      await evaluate('document.querySelectorAll("dialog[open], [aria-modal=true], [data-slot=subagent-popover]").length'),
+      await evaluate('document.querySelectorAll("dialog[open], [aria-modal=true], [data-slot=subagent-popover][data-state=open]").length'),
       0,
       "Canvas replaces the conversation without opening a modal",
     );
@@ -498,11 +498,11 @@ async function browserChecks() {
     assert.deepEqual(await world(), arrangedView, "Live activity updates preserve the viewport");
     await evaluate('document.querySelector("[data-diff-back]").click()');
     await waitFor('!document.querySelector("[data-slot=subagent-canvas]")');
-    await waitFor('document.activeElement === document.querySelector("[data-slot=subagent-track] > button")');
+    await waitFor('document.activeElement === document.querySelector("[data-slot=subagent-track] [data-face=pill] button")');
     await assertMainGutters();
     assert.ok(await evaluate('document.querySelector("textarea[aria-label=Prompt]").getClientRects().length > 0'), "Back restores the composer");
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
-    await waitFor('!!document.querySelector("[data-slot=subagent-popover]")');
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"');
     await clickLabel("Open subagent canvas");
     await waitFor('!!document.querySelector("[data-slot=subagent-canvas]")');
     assert.deepEqual(await positions(), arranged, "Closing and reopening preserves the arrangement");
@@ -827,8 +827,8 @@ async function browserChecks() {
     assert.equal(await godAngry(), true);
     await evaluate('document.querySelector("[data-diff-back]").click()');
     await waitFor('!document.querySelector("[data-slot=subagent-canvas]")');
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
-    await waitFor('!!document.querySelector("[data-slot=subagent-popover]")');
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"');
     await clickLabel("Open subagent canvas");
     await waitFor('!!document.querySelector("[data-slot=subagent-canvas]")');
     assert.equal(await godAngry(), false, "Closing the canvas clears the awake expression");
@@ -875,12 +875,12 @@ async function browserChecks() {
     await screenshot("subagent-canvas-narrow");
     await key("Escape");
     await waitFor('!document.querySelector("[data-slot=subagent-canvas]")');
-    await waitFor('document.activeElement === document.querySelector("[data-slot=subagent-track] > button")');
+    await waitFor('document.activeElement === document.querySelector("[data-slot=subagent-track] [data-face=pill] button")');
     await assertMainGutters();
     await evaluate('window.setChildren(items => items.filter(item => !item.id.startsWith("arrival-")))');
     window.setContentSize(800, 600);
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
-    await waitFor('!!document.querySelector("[data-slot=subagent-popover]")');
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"');
     await clickLabel("Archive Run tests");
     await waitFor('document.querySelectorAll("[data-subagent-row]").length === 1');
     await evaluate('document.querySelector("[data-subagent-archived-toggle]").click()');
@@ -905,29 +905,67 @@ async function browserChecks() {
     window.setContentSize(800, 600);
     await delay(200);
     await screenshot("subagent-transcript");
-    await clickLabel("Close subagents");
-    assert.equal(await evaluate('document.activeElement === document.querySelector("[data-slot=subagent-track] > button")'), true);
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
+    // A subagent with its own to-do list: the detail is its plan, the current item carrying what it says and runs now.
+    await evaluate(`window.setChildren(items => (window.savedChildren = items, items.map(item => item.id === "review" ? {
+      ...item,
+      latestActivity: "Ran \`npm test -- auth\`",
+      tasks: [
+        { id: "0", content: "Read the login and refresh code", status: "completed" },
+        { id: "1", content: "Run the auth tests", activeForm: "Running the auth tests", status: "in_progress" },
+        { id: "2", content: "Write up regressions", status: "pending" },
+      ],
+      progress: { steps: 3, said: "Now running the auth suite to confirm.", tools: { reads: 6, commands: 2, searches: 1 } },
+      transcript: [
+        { id: "m1", kind: "message", text: "Child-only finding. The refresh path skips the expiry check." },
+        { id: "t1", kind: "tool", tool: "read", text: "Read \`auth.ts\`" },
+        { id: "m2", kind: "message", text: "Now running the auth suite to confirm." },
+        { id: "t2", kind: "tool", tool: "shell", text: "Ran \`npm test -- auth\`" },
+      ],
+    } : item)))`);
+    await waitFor('!!document.querySelector("[data-subagent-plan]")');
+    assert.equal(
+      await evaluate('document.querySelector("[data-subagent-plan] [data-status=in_progress]").textContent.includes("Running the auth tests")'),
+      true,
+    );
+    assert.equal(
+      await evaluate('document.querySelector("[data-subagent-plan] [data-status=in_progress]").textContent.includes("Now running the auth suite to confirm.")'),
+      true,
+    );
+    assert.equal(await evaluate('document.querySelector("[data-subagent-plan]").textContent.includes("1 of 3 done")'), true);
+    await screenshot("subagent-plan");
+    await clickLabel("Back to subagents");
+    await waitFor('document.querySelectorAll("[data-subagent-row]").length === 2');
+    assert.ok(await evaluate('document.querySelector("[data-subagent-row]").textContent.includes("1 of 3 · 6 files read · 2 commands")'));
+    assert.ok(await evaluate('document.querySelector("[data-subagent-row]").textContent.includes("Now running the auth suite to confirm.")'));
+    await screenshot("subagents-glance-list");
+    await evaluate("window.setChildren(window.savedChildren)");
+    await clickLabel("Collapse subagents");
+    assert.equal(await evaluate('document.activeElement === document.querySelector("[data-slot=subagent-track] [data-face=pill] button")'), true);
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
     window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
-    await waitFor('!document.querySelector("[data-slot=subagent-popover]")');
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
-    await waitFor('!!document.querySelector("[data-slot=subagent-popover]")');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state !== "open"');
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"');
     await evaluate('document.querySelector("textarea[aria-label=Prompt]").dispatchEvent(new PointerEvent("pointerdown",{bubbles:true}))');
-    await waitFor('!document.querySelector("[data-slot=subagent-popover]")');
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
-    await waitFor('!!document.querySelector("[data-slot=subagent-popover]")');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state !== "open"');
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"');
     assert.equal(await evaluate(`document.querySelectorAll('[aria-label^="Unlink"]').length`), 0);
     await evaluate('document.querySelector("[data-subagent-archive-finished]").click()');
     await waitFor('document.querySelectorAll("[data-subagent-row]").length===1');
     assert.ok(await evaluate('document.querySelector("[data-subagent-archive-finished]").disabled'));
     assert.ok(await evaluate('document.querySelector("[data-subagent-row]").textContent.includes("Review authentication")'));
     await evaluate("window.finishChildren()");
-    await waitFor('!document.querySelector("[data-slot=subagent-track] > button svg")');
+    await waitFor('!document.querySelector("[data-slot=subagent-track] [data-face=pill] button svg")');
     await waitFor('!document.querySelector("[data-subagent-archive-finished]").disabled');
     await evaluate('document.querySelector("[data-subagent-archive-finished]").click()');
     await waitFor('document.querySelectorAll("[data-subagent-row]").length===0');
-    assert.equal(await evaluate('document.querySelector("[data-slot=subagent-track] > button")'), null, "Archiving the last visible child hides the pill");
+    // The open panel stands in for the pill; once it closes the empty slot leaves the row.
+    assert.ok(
+      await evaluate('(() => {const face=document.querySelector("[data-slot=subagent-track] [data-face=pill]");return !face || face.inert})()'),
+      "Archiving the last visible child hides the pill",
+    );
     await screenshot("subagents-all-archived");
     await evaluate('document.querySelector("[data-subagent-archived-toggle]").click()');
     await waitFor('document.querySelectorAll("[data-subagent-row]").length===2');
@@ -939,9 +977,9 @@ async function browserChecks() {
       'window.setChildren([{id:"advisor:review",source:"milagre-advisor",provider:"codex",model:"reported",title:"Security",status:"running",startedAt:Date.now(),updatedAt:Date.now(),transcript:[{id:"answer",kind:"message",text:"Advisor finding: prefer validated reads."}]}]); window.setAdvisorResult(true)',
     );
     await waitFor('!!document.querySelector("[data-slot=subagent-track]")');
-    if (await evaluate('!!document.querySelector("[data-slot=subagent-popover]")'))
-      await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
-    await evaluate('document.querySelector("[data-slot=subagent-track] > button").click()');
+    if (await evaluate('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"'))
+      await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
+    await evaluate('document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()');
     await waitFor('!!document.querySelector("[data-advisor-stop]")');
     assert.ok(await evaluate('document.querySelector("[data-subagent-row]").textContent.includes("Codex advisor")'));
     await screenshot("advisor-running");
@@ -957,7 +995,7 @@ async function browserChecks() {
     await waitFor('!!document.querySelector("[data-slot=subagent-transcript]")');
     assert.ok(await evaluate('document.querySelector("[data-slot=subagent-transcript]").textContent.includes("Advisor finding")'));
     await screenshot("advisor-output");
-    await clickLabel("Close subagents");
+    await clickLabel("Collapse subagents");
     assert.ok(await evaluate('document.querySelector("[data-advisor-result]").textContent.includes("Codex advisor result: Security")'));
     assert.equal(await evaluate('document.querySelector("[data-advisor-result]").closest("article").dataset.from'), "app");
     await screenshot("advisor-result");
@@ -966,15 +1004,17 @@ async function browserChecks() {
     await evaluate(
       `window.useAntigravity(); window.setChildren(${JSON.stringify(ANTIGRAVITY_CHILDREN)}.map(child => ({...child, startedAt: Date.now() - 16000, updatedAt: Date.now(), ...(child.status === "completed" ? { endedAt: Date.now() } : {})})))`,
     );
-    await waitFor('!!document.querySelector("[data-slot=subagent-track] > button")');
-    await evaluate('document.querySelector("[data-slot=subagent-popover]") || document.querySelector("[data-slot=subagent-track] > button").click()');
-    await waitFor('!!document.querySelector("[data-slot=subagent-popover]")');
+    await waitFor('!!document.querySelector("[data-slot=subagent-track] [data-face=pill] button")');
+    await evaluate(
+      'document.querySelector("[data-slot=subagent-popover][data-state=open]") || document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()',
+    );
+    await waitFor('document.querySelector("[data-slot=subagent-popover]")?.dataset.state === "open"');
     // The list may still show the archived children from the checks above.
     await evaluate(
       'document.querySelector("[data-subagent-archived-toggle]")?.textContent === "Back to subagents" && document.querySelector("[data-subagent-archived-toggle]").click()',
     );
     await waitFor('document.querySelectorAll("[data-subagent-row]").length === 2');
-    assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-subagent-row]")].map(row => row.textContent.trim())'), [
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-subagent-title]")].map(title => title.textContent.trim())'), [
       "Subagent One",
       "Subagent Two",
     ]);
@@ -985,10 +1025,12 @@ async function browserChecks() {
     await screenshot("antigravity-subagents");
     await evaluate('document.querySelector("[data-subagent-open]").click()');
     await waitFor('!!document.querySelector("[data-slot=subagent-transcript]")');
+    // Tool calls are counted in the detail; the calls themselves are in its full log.
+    await evaluate('document.querySelector("[data-subagent-log-toggle]").click()');
     for (const text of ["Ran `sleep 4; cat a.txt`", "Read `a.txt`", "File a: hello from a."])
       assert.ok(await evaluate(`document.querySelector("[data-slot=subagent-transcript]").textContent.includes(${JSON.stringify(text)})`), text);
     await screenshot("antigravity-subagent-transcript");
-    await clickLabel("Close subagents");
+    await clickLabel("Collapse subagents");
     await evaluate("window.setChildren([])");
     await waitFor('!document.querySelector("[data-slot=subagent-track]")');
     // A host that sends only the end of each transcript (subagent-tails-v1): the panel reads the whole one once, then
@@ -1003,20 +1045,24 @@ async function browserChecks() {
       window.tailOf = tail;
       window.setChildren([tail(30)]);
     })()`);
-    await waitFor('!!document.querySelector("[data-slot=subagent-track] > button")');
-    await evaluate('document.querySelector("[data-slot=subagent-popover]") || document.querySelector("[data-slot=subagent-track] > button").click()');
+    await waitFor('!!document.querySelector("[data-slot=subagent-track] [data-face=pill] button")');
+    await evaluate(
+      'document.querySelector("[data-slot=subagent-popover][data-state=open]") || document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()',
+    );
     await waitFor('!!document.querySelector("[data-subagent-open]")');
     await evaluate('document.querySelector("[data-subagent-open]").click()');
-    await waitFor('[...document.querySelectorAll("[data-slot=subagent-transcript] > div.min-w-0")].length === 30');
+    await waitFor('!!document.querySelector("[data-subagent-log-toggle]")');
+    await evaluate('document.querySelector("[data-subagent-log-toggle]").click()');
+    await waitFor('document.querySelectorAll("[data-subagent-log-entry]").length === 30');
     assert.deepEqual(await evaluate("window.subagentReads"), [["/fixture", 1, "long"]]);
     await evaluate("window.setChildren([window.tailOf(31)])");
-    await waitFor('[...document.querySelectorAll("[data-slot=subagent-transcript] > div.min-w-0")].length === 31');
-    const shown = await evaluate('[...document.querySelectorAll("[data-slot=subagent-transcript] > div.min-w-0")].map(row => row.textContent)');
+    await waitFor('document.querySelectorAll("[data-subagent-log-entry]").length === 31');
+    const shown = await evaluate('[...document.querySelectorAll("[data-subagent-log-entry]")].map(row => row.textContent)');
     assert.equal(shown[0], "Long entry 1");
     assert.equal(shown.at(-1), "Long entry 31");
     assert.equal(await evaluate("window.subagentReads.length"), 1, "A tail that follows on doesn't read the transcript again");
     await screenshot("subagent-transcript-tails");
-    await clickLabel("Close subagents");
+    await clickLabel("Collapse subagents");
     await evaluate("window.setChildren([])");
     await waitFor('!document.querySelector("[data-slot=subagent-track]")');
     // A host that sends archived subagents as summaries (archived-subagent-summaries-v1): opening one from the Archived
@@ -1040,11 +1086,13 @@ async function browserChecks() {
       window.summaryAt = started + 60000;
       window.setChildren([{ id: "live", title: "Live child", status: "running", startedAt: Date.now() - 5000, updatedAt: Date.now(), transcript: [] }, summary(window.summaryAt)]);
     })()`);
-    await waitFor('!!document.querySelector("[data-slot=subagent-track] > button")');
-    await evaluate('document.querySelector("[data-slot=subagent-popover]") || document.querySelector("[data-slot=subagent-track] > button").click()');
+    await waitFor('!!document.querySelector("[data-slot=subagent-track] [data-face=pill] button")');
+    await evaluate(
+      'document.querySelector("[data-slot=subagent-popover][data-state=open]") || document.querySelector("[data-slot=subagent-track] [data-face=pill] button").click()',
+    );
     await waitFor('!!document.querySelector("[data-subagent-archived-toggle]")');
     await evaluate('document.querySelector("[data-subagent-archived-toggle]").click()');
-    await waitFor('[...document.querySelectorAll("[data-subagent-row]")].map(row => row.textContent.trim()).join() === "Archived review"');
+    await waitFor('[...document.querySelectorAll("[data-subagent-title]")].map(title => title.textContent.trim()).join() === "Archived review"');
     await evaluate('document.querySelector("[data-subagent-open]").click()');
     await waitFor('!!document.querySelector("[data-subagent-loading]")');
     assert.equal(await evaluate('document.querySelector("[data-slot=subagent-transcript]").textContent.includes("No child output")'), false);
@@ -1052,6 +1100,7 @@ async function browserChecks() {
     await screenshot("archived-subagent-loading");
     await evaluate("window.releaseSummaryRead()");
     await waitFor('!document.querySelector("[data-subagent-loading]")');
+    await evaluate('document.querySelector("[data-subagent-log-toggle]").click()');
     for (const text of ["Check the token refresh path", "Finished the review", "Ran `npm test -- auth`", "Token refresh is covered."])
       assert.ok(await evaluate(`document.querySelector("[data-slot=subagent-transcript]").textContent.includes(${JSON.stringify(text)})`), text);
     await screenshot("archived-subagent-loaded");
@@ -1070,19 +1119,19 @@ async function browserChecks() {
       window.summaryReads.push([scope, chatId, agentId]);
       return window.summaryReads.length === 1 ? Promise.reject(new Error("offline")) : Promise.resolve({ ...window.summaryOf(1), id: "offline", prompt: "After reconnecting", transcript: [] });
     } }; window.setChildren(items => [...items, { ...window.summaryOf(window.summaryAt), id: "offline", title: "Offline review" }])`);
-    await evaluate('[...document.querySelectorAll("[data-slot=subagent-popover] button")].find(button => button.textContent === "Back").click()');
+    await evaluate("document.querySelector(\"[data-slot=subagent-popover] [aria-label='Back to subagents']\").click()");
     await waitFor('[...document.querySelectorAll("[data-subagent-open]")].some(button => button.textContent.includes("Offline review"))');
     await evaluate('[...document.querySelectorAll("[data-subagent-open]")].find(button => button.textContent.includes("Offline review")).click()');
     await waitFor('!!document.querySelector("[data-subagent-failed]")');
     await delay(300);
     assert.equal(await evaluate("window.summaryReads.length"), 1, "a failed read isn't retried while the panel stays open");
     await screenshot("archived-subagent-failed");
-    await evaluate('[...document.querySelectorAll("[data-slot=subagent-popover] button")].find(button => button.textContent === "Back").click()');
+    await evaluate("document.querySelector(\"[data-slot=subagent-popover] [aria-label='Back to subagents']\").click()");
     await waitFor('!!document.querySelector("[data-subagent-open]")');
     await evaluate('[...document.querySelectorAll("[data-subagent-open]")].find(button => button.textContent.includes("Offline review")).click()');
     await waitFor('document.querySelector("[data-slot=subagent-transcript]").textContent.includes("After reconnecting")');
     assert.equal(await evaluate("window.summaryReads.length"), 2, "opening it again reads again");
-    await clickLabel("Close subagents");
+    await clickLabel("Collapse subagents");
     await evaluate("window.setChildren([])");
     await waitFor('!document.querySelector("[data-slot=subagent-track]")');
     console.log(

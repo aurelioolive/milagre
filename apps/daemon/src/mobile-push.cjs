@@ -5,6 +5,7 @@ const { randomUUID } = require("node:crypto");
 const { attentionNotice, completionNotice, notificationPreview } = require("@milagre/shared/attention");
 const { isTurnEnd, projectOfKey, sessionIdFromKey, subagentActive } = require("@milagre/shared/agent-runs");
 const { isLinkScopeKey } = require("@milagre/shared/chat-scopes");
+const { notificationChimeChannel, notificationChimeSound, parseNotificationChime } = require("@milagre/shared/notification-chimes");
 const validOwner = (owner) => path.isAbsolute(owner) || isLinkScopeKey(owner);
 
 const FOCUS_MS = 15000;
@@ -48,11 +49,16 @@ function registration(value) {
     hostId: value.hostId,
     notifyWhenWaiting: value.notifyWhenWaiting,
     notifyOnCompletion: value.notifyOnCompletion,
+    // The phone's Experimental chime, bundled in its build. Older phones send none: the system sound.
+    chime: parseNotificationChime(value.chime),
   };
 }
 
-/** The daemon owns registrations and event policy. Neither desktop nor a live phone connection is needed to deliver. */
-function createMobilePush({ dataDir, send, context, now = Date.now, onError = () => {} }) {
+/**
+ * The daemon owns registrations and event policy. Neither desktop nor a live phone connection is needed to deliver.
+ * A Chat open in a focused desktop window (isChatFocused) is already being read, so no phone hears about it.
+ */
+function createMobilePush({ dataDir, send, context, isChatFocused = () => false, now = Date.now, onError = () => {} }) {
   const file = path.join(dataDir, "mobile-push.json");
   let devices = new Map();
   const focus = new Map();
@@ -90,7 +96,7 @@ function createMobilePush({ dataDir, send, context, now = Date.now, onError = ()
   }
   function current(device, chatId) {
     const view = focus.get(device.deviceId);
-    return !closed && devices.get(device.deviceId) === device && !(view?.chatId === chatId && view.until > now());
+    return !closed && devices.get(device.deviceId) === device && !(view?.chatId === chatId && view.until > now()) && !isChatFocused(chatId);
   }
   function deliver(chatId, run, event, requestId) {
     if (!devices.size) return;
@@ -113,8 +119,8 @@ function createMobilePush({ dataDir, send, context, now = Date.now, onError = ()
               to: device.token,
               title: capped(notice.title, 120),
               body: capped(notice.body, 240),
-              sound: "default",
-              channelId: "chats",
+              sound: notificationChimeSound(device.chime),
+              channelId: notificationChimeChannel(device.chime),
               ttl: 300,
               data: { kind: "milagre-chat", hostId: device.hostId, projectPath: projectOfKey(chatId), sessionId: sessionIdFromKey(chatId), eventId },
             },

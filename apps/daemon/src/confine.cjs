@@ -59,6 +59,8 @@ const PATHS = Object.freeze({
   "browser:close": denied,
   // A Terminal runs any command as the owner of this computer. A demo Project never opens one.
   "terminal:list": denied,
+  "terminal:profiles": denied,
+  "terminal:setShell": denied,
   "terminal:open": denied,
   "terminal:read": denied,
   "terminal:input": denied,
@@ -67,6 +69,7 @@ const PATHS = Object.freeze({
   // A design is read through its Chat, which must be in the folder.
   "artifact:get": ([value]) => [chatProject(value?.chatId)],
   "artifact:apply": denied,
+  "artifact:delete": denied,
   "artifact:list": ([value]) => [chatProject(value?.chatId)],
   "artifact:page-shares": ([value]) => [chatProject(value?.chatId)],
   "artifact:sharing-status": denied,
@@ -139,6 +142,7 @@ const PATHS = Object.freeze({
   "advisor:stop": ([chatId]) => [chatProject(chatId)],
   "advisor:retry": ([chatId]) => [chatProject(chatId)],
   "agent:interrupt": ([chatId]) => [chatProject(chatId)],
+  "chat:reload": ([chatId]) => [chatProject(chatId)],
   "agent:respond-permission": ([value]) => [chatProject(value?.chatId)],
   "accounts:scopes": none,
   "accounts:scope": none,
@@ -151,6 +155,10 @@ const PATHS = Object.freeze({
   "accounts:remove": none,
   "mcp:accounts": none,
   "mcp:check": none,
+  "mcp:definition": none,
+  "mcp:saveUrl": none,
+  "mcp:remove": none,
+  "mcp:toggle": none,
   // Local connection grants are computer-wide and must never be issued by a confined demo.
   "local-mcp:status": denied,
   "local-mcp:create": denied,
@@ -168,6 +176,7 @@ const PATHS = Object.freeze({
   "chat:patch": ([projectPath]) => [projectPath],
   "chat:archive-subagent": ([projectPath]) => [projectPath],
   "chat:archive-finished-subagents": ([projectPath]) => [projectPath],
+  "chat:subagent": ([projectPath]) => [projectPath],
   "worktree:pull-request": ([worktreePath]) => [worktreePath],
   "worktree:pull-requests": ([worktreePath]) => [worktreePath],
   "project:branches": ([projectPath]) => [projectPath],

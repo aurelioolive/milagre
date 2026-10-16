@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateDesignPageSnapshot, renderDesignPage, isSnapshotRaster } from "./design-page.mjs";
+import { validateDesignPageSnapshot, renderDesignPage, isSnapshotRaster, MAX_DESIGN_PAGE_HTML_BYTES } from "./design-page.mjs";
 const document = () => ({ schemaVersion: 1, width: 390, height: 844, nodes: [{ id: "heading", type: "text", width: 300, height: 80, text: "Hello" }] });
 const page = () => ({
   schemaVersion: 1,
@@ -95,4 +95,87 @@ test("an Artifact snapshot freezes one HTML page in an opaque sandbox without pr
   assert.match(html, /&lt;script&gt;/);
   assert.throws(() => validateDesignPageSnapshot({ ...input, artifacts: [...input.artifacts, ...input.artifacts] }), /exactly one/);
   assert.throws(() => validateDesignPageSnapshot({ ...input, artifacts: [{ ...input.artifacts[0], html: "x".repeat(1000001) }] }), { status: 413 });
+});
+
+const allWeights = (index) => ({
+  schemaVersion: 1,
+  width: 390,
+  height: 844,
+  nodes: [400, 500, 600, 700].map((fontWeight) => ({
+    id: `w${fontWeight}`,
+    type: "text",
+    y: fontWeight / 10,
+    width: 300,
+    height: 40,
+    text: `Design ${index}`,
+    fontWeight,
+  })),
+});
+const fontFaceCount = (html) => decodeURIComponent(html.match(/src="data:image\/svg\+xml,([^"]+)"/)?.[1] ?? "").match(/@font-face/g)?.length ?? 0;
+
+test("twenty designs that each use all four Inter weights still render, with embedded fonts", () => {
+  const html = renderDesignPage({
+    schemaVersion: 1,
+    title: "Many",
+    designs: Array.from({ length: 20 }, (_, index) => ({ title: `D${index}`, document: allWeights(index) })),
+  });
+  assert.equal(fontFaceCount(html), 4);
+  assert.ok(Buffer.byteLength(html) < MAX_DESIGN_PAGE_HTML_BYTES);
+});
+
+test("a page that only fits without fonts falls back to system fonts instead of failing", () => {
+  const png = `data:image/png;base64,${Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), Buffer.alloc(100000, 1)]).toString("base64")}`;
+  const designs = Array.from({ length: 20 }, (_, index) => {
+    const document = allWeights(index);
+    document.nodes.push({ id: "photo", type: "image", y: 300, width: 100, height: 100, src: png });
+    return { title: `D${index}`, document };
+  });
+  const html = renderDesignPage({ schemaVersion: 1, title: "Heavy", designs });
+  assert.doesNotMatch(html, /font-face/, "no @font-face, encoded or not");
+  assert.match(html, /<figure /);
+  assert.ok(Buffer.byteLength(html) < MAX_DESIGN_PAGE_HTML_BYTES);
+});
+
+const describedAs = (html) => /<title>[^<]*<\/title><meta name="description" content="([^"]*)">/.exec(html)?.[1];
+const artifactPage = (html, title = "Pricing research") => ({
+  schemaVersion: 1,
+  kind: "artifacts",
+  title,
+  artifacts: [{ title, width: 390, height: 844, html }],
+});
+
+test("an Artifact's link preview description prefers its own meta description", () => {
+  const html = renderDesignPage(artifactPage(`<head><meta content='Three plans &amp; "one" winner' name="description"></head><body><p>Body text</p></body>`));
+  assert.equal(describedAs(html), "Three plans &amp; &quot;one&quot; winner");
+});
+
+test("an Artifact's link preview describes its visible text, not scripts, styles or a repeated title", () => {
+  const body = `<title>Ignored</title><style>p{color:red}</style><script>const secret = 1;</script><h1>Pricing research</h1><!-- note --><p>Compares &nbsp;Pro&#x2F;Team tiers</p>`;
+  assert.equal(describedAs(renderDesignPage(artifactPage(body))), "Compares Pro/Team tiers");
+  const long = renderDesignPage(artifactPage(`<p>${"word ".repeat(80)}</p>`));
+  const description = describedAs(long);
+  assert.ok(description.length <= 200 && description.endsWith("word…"), description);
+  assert.equal(describedAs(renderDesignPage(artifactPage("<script>only()</script>"))), undefined);
+});
+
+test("a Designs link preview names several designs and reads one design's visible text layers", () => {
+  assert.equal(describedAs(renderDesignPage(page())), "2 designs: First and Second.");
+  const nodes = [
+    { id: "card", type: "frame", width: 300, height: 200, hidden: true },
+    { id: "secret", type: "text", parentId: "card", width: 100, height: 20, text: "Draft copy" },
+    { id: "heading", type: "text", width: 300, height: 40, text: "Welcome back" },
+    { id: "cta", type: "text", width: 300, height: 40, text: "Start workout" },
+  ];
+  const single = { schemaVersion: 1, title: "Home", designs: [{ title: "Home", document: { schemaVersion: 1, width: 390, height: 844, nodes } }] };
+  assert.equal(describedAs(renderDesignPage(single)), "Welcome back · Start workout");
+  assert.equal(
+    describedAs(renderDesignPage({ ...single, designs: [{ title: "Home", document: { schemaVersion: 1, width: 390, height: 844, nodes: [] } }] })),
+    undefined,
+  );
+});
+
+test("every public page asks crawlers not to index, follow or archive it", () => {
+  const robots = '<meta name="robots" content="noindex,nofollow,noarchive">';
+  assert.ok(renderDesignPage(page()).includes(robots));
+  assert.ok(renderDesignPage(artifactPage("<p>Text</p>")).includes(robots));
 });

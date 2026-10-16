@@ -337,7 +337,7 @@ test("editable design creation and batches show cards for Claude and Codex", () 
     const title = tool === "design_show" ? "Showed `Welcome screen`" : "Edited `a design`";
     const completedTitle = tool === "design_show" ? "Showed `Welcome screen`" : "Edited `Welcome screen`";
     const name = `mcp__milagre__${tool}`;
-    assert.deepEqual(claudeStep("design-1", name, args), { id: "design-1", kind: "artifact", title });
+    assert.deepEqual(claudeStep("design-1", name, args), { id: "design-1", kind: "artifact", title, tool });
     assert.deepEqual(claudeStepResult({ id: "design-1", name, input: args }, ok(result)), { id: "design-1", status: "done", artifact, title: completedTitle });
     assert.deepEqual(claudeStepResult({ id: "design-1", name, input: args }, ok("Design version conflict", { is_error: true })), {
       id: "design-1",
@@ -346,7 +346,7 @@ test("editable design creation and batches show cards for Claude and Codex", () 
     });
 
     const call = { type: "mcpToolCall", id: "design-2", server: "milagre", tool, status: "inProgress", arguments: args };
-    assert.deepEqual(codexStep(call), { id: "design-2", kind: "artifact", title });
+    assert.deepEqual(codexStep(call), { id: "design-2", kind: "artifact", title, tool });
     assert.deepEqual(codexStepResult({ ...call, status: "completed", result: { content: [{ type: "text", text: result }] } }), {
       id: "design-2",
       status: "done",
@@ -359,6 +359,19 @@ test("editable design creation and batches show cards for Claude and Codex", () 
       detail: "Design version conflict",
     });
   }
+});
+
+test("a completed design step carries the design's group", () => {
+  const call = { id: "design-1", name: "mcp__milagre__design_show", input: { title: "Welcome" } };
+  const result = (group) => ok(JSON.stringify({ id: "welcome", version: 1, title: "Welcome", format: "design", group }));
+  assert.deepEqual(claudeStepResult(call, result("Onboarding")).artifact, {
+    id: "welcome",
+    version: 1,
+    title: "Welcome",
+    format: "design",
+    group: "Onboarding",
+  });
+  assert.deepEqual(claudeStepResult(call, result(42)).artifact, { id: "welcome", version: 1, title: "Welcome", format: "design" });
 });
 
 test("completed design activity uses the saved title and leaves malformed results without a fabricated title", () => {
@@ -396,14 +409,38 @@ test("HTML artifact tool renders a typed artifact card for both providers", () =
   const args = { title: artifact.title, html: "<p>Why it works</p>" };
   const text = JSON.stringify({ ...artifact, versions: 1, width: 1280, height: 800 });
   const name = "mcp__milagre__artifact_show";
-  assert.deepEqual(claudeStep("html-1", name, args), { id: "html-1", kind: "artifact", title: "Showed `Explanation`" });
+  assert.deepEqual(claudeStep("html-1", name, args), { id: "html-1", kind: "artifact", title: "Showed `Explanation`", tool: "artifact_show" });
   assert.deepEqual(claudeStepResult({ id: "html-1", name, input: args }, ok(text)), { id: "html-1", status: "done", artifact, title: "Showed `Explanation`" });
   const call = { type: "mcpToolCall", id: "html-2", server: "milagre", tool: "artifact_show", status: "inProgress", arguments: args };
-  assert.deepEqual(codexStep(call), { id: "html-2", kind: "artifact", title: "Showed `Explanation`" });
+  assert.deepEqual(codexStep(call), { id: "html-2", kind: "artifact", title: "Showed `Explanation`", tool: "artifact_show" });
   assert.deepEqual(codexStepResult({ ...call, status: "completed", result: { content: [{ type: "text", text }] } }), {
     id: "html-2",
     status: "done",
     artifact,
     title: "Showed `Explanation`",
   });
+});
+
+test("a design result with an image attached still produces the Chat card", () => {
+  const artifact = { id: "welcome", version: 2, title: "Welcome", format: "design" };
+  const summary = JSON.stringify({ ...artifact, warnings: [] });
+  // The block list a Claude tool_result carries when Milagre attaches the rendered design.
+  const block = ok([
+    { type: "text", text: summary },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+  ]);
+  const step = claudeStepResult({ id: "call-1", name: "mcp__milagre__design_show", input: {} }, block, undefined);
+  assert.deepEqual(step.artifact, artifact);
+  // Codex's mcpToolCall carries MCP-shaped blocks.
+  const call = { type: "mcpToolCall", id: "design-3", server: "milagre", tool: "design_show", status: "completed", arguments: {} };
+  const codex = codexStepResult({
+    ...call,
+    result: {
+      content: [
+        { type: "text", text: summary },
+        { type: "image", data: "AAAA", mimeType: "image/png" },
+      ],
+    },
+  });
+  assert.deepEqual(codex.artifact, artifact);
 });

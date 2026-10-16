@@ -12,7 +12,10 @@ const { waitUntil } = require("./test-helpers.cjs");
 const FAKE = path.join(__dirname, "fixtures", "fake-app-server.cjs");
 const TURN = { prompt: "Hi", images: [], model: "gpt-6-sol", permissionMode: "auto" };
 
-function codex(t, { scenario = "reply", resumeId, tldrEnabled, designsEnabled, analysisOnly, linked, command = process.execPath, interruptGraceMs } = {}) {
+function codex(
+  t,
+  { scenario = "reply", resumeId, tldrEnabled, designsEnabled, analysisOnly, linked, mcpExtras, command = process.execPath, interruptGraceMs } = {},
+) {
   const events = [];
   const requests = [];
   const session = new CodexSession({
@@ -22,6 +25,7 @@ function codex(t, { scenario = "reply", resumeId, tldrEnabled, designsEnabled, a
     designsEnabled,
     analysisOnly,
     linked,
+    mcpExtras,
     command,
     clientVersion: "test",
     interruptGraceMs,
@@ -254,6 +258,19 @@ test("MCP tool calls in Ask mode reach the permission card and accept once", asy
   await ended(events);
   assert.equal(replyText(events), 'answer:{"action":"accept","content":{}}');
   assert.equal(session.respondToPermission("srv-mcp", "allow"), false);
+});
+
+test("Milagre's plan tools are accepted without a card in every mode", async (t) => {
+  for (const permissionMode of ["ask", "auto"]) {
+    const { session, events } = codex(t, { scenario: "mcp-plan-approval" });
+    await session.startTurn({ ...TURN, permissionMode });
+    await ended(events);
+    assert.equal(replyText(events), 'answer:{"action":"accept","content":{}}');
+    assert.equal(
+      events.some((event) => event.type === "permission-request"),
+      false,
+    );
+  }
 });
 
 test("MCP permission denial and cancellation use elicitation responses", async (t) => {
@@ -1375,4 +1392,66 @@ test("Codex tool image blocks become visible image steps, including dynamic tool
   assert.equal(images.length, 2);
   assert.deepEqual(fs.readFileSync(images[0].file), Buffer.from(data, "base64"));
   assert.ok(events.some((event) => event.type === "step-started" && event.step.kind === "image"));
+});
+
+test("a design tool's rendered PNG is not repeated as an image step, but another server's image still is", async (t) => {
+  const events = [];
+  const session = new CodexSession({ emit: (event) => events.push(event) });
+  session.state.threadId = "parent";
+  t.after(() => session.close());
+  const data = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from("design render")]).toString("base64");
+  const content = [{ type: "image", data, mimeType: "image/png" }];
+  const complete = (id, server, tool) =>
+    session.handleNotification("item/completed", {
+      threadId: "parent",
+      item: { id, type: "mcpToolCall", server, tool, status: "completed", result: { content } },
+    });
+  complete("show", "milagre", "design_show");
+  complete("apply", "milagre", "design_apply");
+  assert.equal(events.filter((event) => event.step?.kind === "image").length, 0);
+  complete("other", "browser", "design_show");
+  complete("shot", "milagre", "screenshot");
+  assert.equal(events.filter((event) => event.step?.kind === "image").length, 2);
+});
+
+test("Everywhere servers and the off list reach thread config", async (t) => {
+  const { session, events, requests } = codex(t, {
+    mcpExtras: async () => ({ servers: [{ name: "linear", type: "http", url: "https://x", headers: {} }], off: ["figma"] }),
+  });
+  await session.startTurn(TURN);
+  await ended(events);
+  const config = requests.find((r) => r.method === "thread/start").params.config;
+  assert.deepEqual(config.mcp_servers.linear, { url: "https://x" });
+  assert.deepEqual(config.mcp_servers.figma, { enabled: false });
+});
+
+test("a failing mcpExtras still starts the Codex thread and is logged once", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const { session, events, requests } = codex(t, {
+    mcpExtras: async () => {
+      throw new Error("boom");
+    },
+  });
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.deepEqual(requests.find((r) => r.method === "thread/start").params.config, { features: { default_mode_request_user_input: true } });
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0].arguments.join(" ")), /boom/);
+});
+
+test("a Codex that refuses Everywhere servers keeps the off entries and milagre on the retry", async (t) => {
+  const reported = [];
+  const linked = { tools: [], url: async () => "http://127.0.0.1:1234/mcp/abc", toolsAvailable: (available) => reported.push(available) };
+  const { session, events, requests } = codex(t, {
+    scenario: "reject-extra-mcp",
+    linked,
+    mcpExtras: async () => ({ servers: [{ name: "linear", type: "http", url: "https://x", headers: {} }], off: ["figma"] }),
+  });
+  await session.startTurn(TURN);
+  await ended(events);
+  const attempts = requests.filter((r) => r.method === "thread/start").map((r) => r.params.config.mcp_servers);
+  assert.deepEqual(Object.keys(attempts[0]).sort(), ["figma", "linear", "milagre"]);
+  assert.deepEqual(attempts.at(-1), { figma: { enabled: false }, milagre: { url: "http://127.0.0.1:1234/mcp/abc", tool_timeout_sec: 86400 } });
+  assert.deepEqual(reported, [true]);
+  assert.deepEqual(events.at(-1), { type: "turn-completed" });
 });

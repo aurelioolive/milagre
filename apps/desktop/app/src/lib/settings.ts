@@ -5,7 +5,9 @@ import { DEFAULT_THEME_ID, parseCustomTheme, resolvePalette, resolveThemeSetting
 import type { CustomTheme, ThemeChoice } from "@milagre/shared/themes";
 import type { ChatOrder } from "./chat-list";
 import { DESKTOP_CHAT_ROW_SHOW, parseChatRowShow, type ChatRowShow } from "@milagre/shared/chat-row";
-import { THEME_EVENT, applyPalette } from "./theme-sheet.ts";
+import { parseToolCallDisplay, type ToolCallDisplay } from "@milagre/shared/chat-display";
+import { DEFAULT_NOTIFICATION_CHIME, parseNotificationChime, type NotificationChime } from "@milagre/shared/notification-chimes";
+import { applyPalette } from "./theme-sheet.ts";
 
 export type ThemePreference = "system" | "light" | "dark";
 /** Whether plan usage reads as the share used or the share left. */
@@ -49,20 +51,16 @@ export interface AppSettings {
   /** Experimental: the old sidebar, with the project menu on top and only the open Project's chats, instead of every
    * Project and Link with its chats. A new key, so the old opt-in (sidebarAllProjects, saved false for everyone) is dropped. */
   legacySidebar: boolean;
-  /** Experimental: a reply's tool calls and the text between them show in the chat, one row each, instead of folding into one line. */
-  muriloMode: boolean;
+  /** Settings › Chat: a reply's tool calls fold into one line, or show one row each with the text between them. */
+  toolCallDisplay: ToolCallDisplay;
+  /** Settings › Chat: thinking rows start open. */
+  expandReasoning: boolean;
   /** Experimental: drive the chats of other Macs running Milagre from this window (Add computer, the computers popover). */
   otherComputers: boolean;
   /** Experimental: turning Ultracode on plays the Mortal Kombat Fatality overlay and the announcer's voice. */
   ultracodeFatality: boolean;
-  /** Let the blurred desktop show through the window (macOS). */
-  windowTranslucent: boolean;
-  /** How much of the desktop shows through the window's own background, 10 to 100. */
-  windowTranslucency: number;
-  /** How much shows through the sidebar and panels, 10 to 90. */
-  panelTranslucency: number;
-  /** Keep the dot grid while translucent. */
-  translucentDots: boolean;
+  /** Experimental: the sound a chat's notification plays, instead of the system's. */
+  notificationChime: NotificationChime;
 }
 
 const STORAGE_KEY = "milagre-settings";
@@ -71,10 +69,6 @@ const THEMES: ThemePreference[] = ["system", "light", "dark"];
 const USAGE_DISPLAYS: UsageDisplay[] = ["used", "remaining"];
 const CLAUDE_REPLIES: ClaudeReplies[] = ["concise", "normal"];
 const CHAT_ORDERS: ChatOrder[] = ["created", "recent"];
-export const WINDOW_TRANSLUCENCY_RANGE = { min: 10, max: 100, step: 5 };
-export const PANEL_TRANSLUCENCY_RANGE = { min: 10, max: 90, step: 5 };
-const clampTo = (value: unknown, range: { min: number; max: number }, fallback: number) =>
-  typeof value === "number" && Number.isFinite(value) ? Math.min(range.max, Math.max(range.min, value)) : fallback;
 const DEFAULTS: AppSettings = {
   theme: "system",
   colorTheme: DEFAULT_THEME_ID,
@@ -97,18 +91,16 @@ const DEFAULTS: AppSettings = {
   chatOrder: "created",
   chatRowShow: DESKTOP_CHAT_ROW_SHOW,
   legacySidebar: false,
-  muriloMode: false,
+  toolCallDisplay: "compact",
+  expandReasoning: false,
   otherComputers: false,
   ultracodeFatality: false,
-  windowTranslucent: false,
-  windowTranslucency: 80,
-  panelTranslucency: 40,
-  translucentDots: true,
+  notificationChime: DEFAULT_NOTIFICATION_CHIME,
 };
 
 function load(): AppSettings {
   try {
-    const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<AppSettings>;
+    const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<AppSettings> & { muriloMode?: unknown };
     const legacyTheme = window.localStorage.getItem(LEGACY_THEME_KEY);
     const theme = saved.theme ?? legacyTheme;
     const customTheme = parseCustomTheme(saved.customTheme);
@@ -138,13 +130,11 @@ function load(): AppSettings {
       chatOrder: CHAT_ORDERS.includes(saved.chatOrder as ChatOrder) ? saved.chatOrder! : DEFAULTS.chatOrder,
       chatRowShow: parseChatRowShow(saved.chatRowShow, DEFAULTS.chatRowShow),
       legacySidebar: typeof saved.legacySidebar === "boolean" ? saved.legacySidebar : DEFAULTS.legacySidebar,
-      muriloMode: typeof saved.muriloMode === "boolean" ? saved.muriloMode : DEFAULTS.muriloMode,
+      toolCallDisplay: parseToolCallDisplay(saved.toolCallDisplay, saved.muriloMode),
+      expandReasoning: typeof saved.expandReasoning === "boolean" ? saved.expandReasoning : DEFAULTS.expandReasoning,
       otherComputers: typeof saved.otherComputers === "boolean" ? saved.otherComputers : DEFAULTS.otherComputers,
       ultracodeFatality: typeof saved.ultracodeFatality === "boolean" ? saved.ultracodeFatality : DEFAULTS.ultracodeFatality,
-      windowTranslucent: typeof saved.windowTranslucent === "boolean" ? saved.windowTranslucent : DEFAULTS.windowTranslucent,
-      windowTranslucency: clampTo(saved.windowTranslucency, WINDOW_TRANSLUCENCY_RANGE, DEFAULTS.windowTranslucency),
-      panelTranslucency: clampTo(saved.panelTranslucency, PANEL_TRANSLUCENCY_RANGE, DEFAULTS.panelTranslucency),
-      translucentDots: typeof saved.translucentDots === "boolean" ? saved.translucentDots : DEFAULTS.translucentDots,
+      notificationChime: parseNotificationChime(saved.notificationChime),
     };
   } catch {
     return DEFAULTS;
@@ -213,30 +203,23 @@ export function applyThemeNow() {
   const { colorTheme, customTheme } = getSettings();
   const scheme = currentScheme();
   document.documentElement.classList.toggle("dark", scheme === "dark");
-  applyPalette(resolvePalette(colorTheme, scheme, customTheme), scheme);
+  applyPalette(resolvePalette(colorTheme, scheme, customTheme));
 }
 
 export function useApplyTheme() {
   const scheme = useResolvedScheme();
-  const { colorTheme, customTheme, windowTranslucent, windowTranslucency, panelTranslucency } = useSettings();
+  const { colorTheme, customTheme } = useSettings();
   const palette = useMemo(() => resolvePalette(colorTheme, scheme, customTheme), [colorTheme, scheme, customTheme]);
   useEffect(() => {
     const root = document.documentElement;
     root.classList.add("theme-switching");
     root.classList.toggle("dark", scheme === "dark");
-    applyPalette(palette, scheme);
+    applyPalette(palette);
     const frame = window.requestAnimationFrame(() => root.classList.remove("theme-switching"));
     return () => window.cancelAnimationFrame(frame);
   }, [palette, scheme]);
-  // The window itself goes see-through in the main process; the renderer's backgrounds follow.
+  // The window behind the page takes the page's color, so a resize never flashes another one.
   useEffect(() => {
-    document.documentElement.classList.toggle("translucent", windowTranslucent);
-    window.dispatchEvent(new Event(THEME_EVENT));
-    void window.milagre?.setWindowTranslucent(windowTranslucent, scheme, palette.page).catch(() => {});
-  }, [windowTranslucent, scheme, palette.page]);
-  useEffect(() => {
-    document.documentElement.style.setProperty("--window-translucency", String(windowTranslucency / 100));
-    document.documentElement.style.setProperty("--panel-translucency", String(panelTranslucency / 100));
-    window.dispatchEvent(new Event(THEME_EVENT));
-  }, [windowTranslucency, panelTranslucency]);
+    void window.milagre?.setWindowBackground(palette.page).catch(() => {});
+  }, [palette.page]);
 }

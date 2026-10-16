@@ -108,6 +108,7 @@ class SessionManager {
       resumeId,
       tldrEnabled,
       designsEnabled,
+      accountId,
       command: request.command,
       ...(request.env ? { env: request.env } : {}),
       // An ACP agent's companion binary and launch arguments, from its resolved install (Antigravity only).
@@ -207,8 +208,9 @@ class SessionManager {
     return permissions ? new Promise((resolve) => permissions.add(request, resolve)) : Promise.resolve("cancelled");
   }
 
-  permissionMode(chatId) {
-    return this.sessions.get(chatId)?.session.permissions?.mode ?? "ask";
+  /** The live session's mode, else `fallback`: a Chat with no agent process has none of its own yet. */
+  permissionMode(chatId, fallback = "ask") {
+    return this.sessions.get(chatId)?.session.permissions?.mode ?? fallback;
   }
 
   activeAccount(chatId, provider) {

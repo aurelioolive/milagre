@@ -72,6 +72,8 @@ const METHODS = new Set([
   "browser:input",
   "browser:close",
   "terminal:list",
+  "terminal:profiles",
+  "terminal:setShell",
   "terminal:open",
   "terminal:read",
   "terminal:input",
@@ -79,6 +81,7 @@ const METHODS = new Set([
   "terminal:close",
   "artifact:get",
   "artifact:apply",
+  "artifact:delete",
   "artifact:list",
   "artifact:page-shares",
   "artifact:sharing-status",
@@ -102,6 +105,7 @@ const METHODS = new Set([
   "chat:send",
   "chat:resume",
   "chat:limit-switch",
+  "chat:reload",
   "agent:interrupt",
   "advisor:stop",
   "advisor:retry",
@@ -112,6 +116,10 @@ const METHODS = new Set([
   "accounts:list",
   "mcp:accounts",
   "mcp:check",
+  "mcp:definition",
+  "mcp:saveUrl",
+  "mcp:remove",
+  "mcp:toggle",
   "local-mcp:status",
   "local-mcp:create",
   "local-mcp:update",
@@ -133,6 +141,8 @@ const METHODS = new Set([
   "chat:patch",
   "chat:archive-subagent",
   "chat:archive-finished-subagents",
+  // One subagent whole: the phone gets only the end of each transcript, and its subagent detail reads the rest.
+  "chat:subagent",
   "attachment:preview",
   "worktree:pull-request",
   "worktree:pull-requests",
@@ -507,6 +517,7 @@ async function startMobileBridge({
       // A snapshot carries the runs too, so "project" covers "runs".
       const types = [];
       if (entry.kinds.has("accounts")) types.push("accounts");
+      if (entry.kinds.has("mcp")) types.push("mcp");
       if (entry.kinds.has("designs")) types.push("designs");
       if (entry.kinds.has("links")) types.push("links");
       if (entry.kinds.has("project")) types.push("project");
@@ -555,6 +566,7 @@ async function startMobileBridge({
     followState(channel, payload);
     for (const entry of live) {
       if (channel === "accounts:changed" && !confine) signal(entry, "accounts", 0);
+      if (channel === "mcp:changed" && !confine) signal(entry, "mcp", 0);
       if (channel === "designs:enabled-changed") signal(entry, "designs", 0);
       // A Link made or removed anywhere (canvas, sidebar, another phone): the phone reads canvas:links again. A confined
       // phone is refused canvas:links, so it isn't told.
@@ -564,7 +576,13 @@ async function startMobileBridge({
         (channel === "link:state" && isLinkScopeKey(entry.projectPath) && payload?.linkId === scopeFromKey(entry.projectPath).linkId)
       )
         signal(entry, "project");
-      else if (channel === "agent:event" && typeof payload?.chatId === "string" && chatInProject(entry.projectPath, payload.chatId)) {
+      // A design draft (step-draft) changes no run: the phone has nothing new to read.
+      else if (
+        channel === "agent:event" &&
+        typeof payload?.chatId === "string" &&
+        payload.event?.type !== "step-draft" &&
+        chatInProject(entry.projectPath, payload.chatId)
+      ) {
         // A turn's end (or a steer) saves its reply as the run goes away: one prompt snapshot shows both, where a runs
         // fetch first would hide the reply until the Project caught up. Subagents live only in the Project state.
         // The state can come whole, as a patch (version), or left out (stateTooLarge); the turn's end needs the snapshot.

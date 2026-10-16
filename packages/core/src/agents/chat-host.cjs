@@ -14,6 +14,7 @@ const {
 const { archiveFinishedSubagents, patchSession } = require("@milagre/shared/project-edits");
 const { catchUpStart, handoffKind, isHandoff, lastTurnProvider } = require("@milagre/shared/handoff");
 const { renderTranscript } = require("./handover.cjs");
+const { accountSwitchText } = require("@milagre/shared/usage-limit");
 
 // A chat stopped longer ago than this waits for the user instead of continuing by itself.
 const RESUME_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -246,6 +247,31 @@ class ChatHost {
   receive(chatId, event) {
     // A turn the quit stops says so in its reply.
     if (this.quitting && event.type === "turn-cancelled") event = { ...event, quit: true };
+    return this.fold(chatId, event).then(
+      (folded) => this.settle(chatId, folded),
+      (error) => {
+        console.warn(`Milagre couldn't record an agent event for ${chatId}:`, error.message);
+        this.publish(chatId, event);
+      },
+    );
+  }
+
+  /**
+   * Replaces the Chat's plan with what `change(currentPlan)` returns, which runs in the same queue as every other change
+   * to its project, so nothing lands between the read and the write. Resolves with the saved plan. Rejects, and writes
+   * nothing, when the Chat is gone, `change` throws (its message is the caller's to show) or the state can't be updated.
+   */
+  async updatePlan(chatId, change) {
+    const folded = await this.fold(chatId, undefined, (session) => {
+      if (!session) throw new Error("This Chat no longer exists.");
+      return { type: "plan-updated", plan: change(session.plan) };
+    });
+    await this.settle(chatId, folded);
+    return folded.event.plan;
+  }
+
+  /** Folds an event into the project's state. `resolve(session)` makes the event inside the queue, from the session as it is then. */
+  fold(chatId, event, resolve) {
     const projectPath = projectOfKey(chatId);
     const sessionId = sessionIdFromKey(chatId);
     let seq;
@@ -254,6 +280,7 @@ class ChatHost {
       .update(
         projectPath,
         (state) => {
+          if (resolve) event = resolve(state.sessions[sessionId]);
           const result = applyAgentEvent(state, this.runs, projectPath, chatId, event);
           this.runs = result.runs;
           seq = ++this.seq;
@@ -267,25 +294,23 @@ class ChatHost {
           added = recorded.messages.filter((message) => !previousIds.has(message.id) && message.role === "assistant");
           return recorded;
         },
-        { persist: event.type !== "subagent-update", chats: [sessionId] },
+        { persist: event?.type !== "subagent-update", chats: [sessionId] },
       )
-      .then(
-        async ({ state, changed }) => {
-          this.publish(
-            chatId,
-            event.type === "subagent-update" && changed
-              ? { ...event, agent: state.sessions[sessionId].subagents.find((agent) => agent.id === event.agent.id) }
-              : event,
-            changed && event.type !== "subagent-update" ? state : undefined,
-            seq,
-          );
-          await this.captureImages(projectPath, state, added);
-        },
-        (error) => {
-          console.warn(`Milagre couldn't record an agent event for ${chatId}:`, error.message);
-          this.publish(chatId, event);
-        },
-      );
+      .then(({ state, changed }) => ({ state, changed, event, seq, added }));
+  }
+
+  /** Publishes a folded event, then captures the images of the replies it saved. */
+  async settle(chatId, { state, changed, event, seq, added }) {
+    const sessionId = sessionIdFromKey(chatId);
+    this.publish(
+      chatId,
+      event.type === "subagent-update" && changed
+        ? { ...event, agent: state.sessions[sessionId].subagents.find((agent) => agent.id === event.agent.id) }
+        : event,
+      changed && event.type !== "subagent-update" ? state : undefined,
+      seq,
+    );
+    await this.captureImages(projectOfKey(chatId), state, added);
   }
 
   /** Capture newly saved replies after publication, outside the state mutation queue. */
@@ -356,6 +381,12 @@ class ChatHost {
       { chats: [sessionIdFromKey(chatId)] },
     );
     if (changed) this.broadcast(projectPath, state);
+  }
+
+  /** The Chat's task list and phase history, for Milagre's task tools. */
+  async plan(chatId) {
+    const state = await this.states.get(projectOfKey(chatId));
+    return state.sessions[sessionIdFromKey(chatId)]?.plan;
   }
 
   /** Adds an assistant line that isn't a reply to a chat (`context` says what it is), after its running turn if it has one. */
@@ -548,7 +579,11 @@ class ChatHost {
           const message = latest.messages.find((item) => item.id === pendingId);
           const divider = latest.messages.find((item) => item.id === dividerId);
           const withoutPending = { ...latest, messages: latest.messages.filter((item) => item.id !== pendingId && item.id !== dividerId) };
-          const sent = applyAgentEvent(withoutPending, this.runs, projectPath, target.chatId, { type: "message-sent", model: runModel });
+          const sent = applyAgentEvent(withoutPending, this.runs, projectPath, target.chatId, {
+            type: "message-sent",
+            model: runModel,
+            permissionMode: request.permissionMode,
+          });
           added = sent.state.messages.slice(withoutPending.messages.length).filter((message) => message.role === "assistant");
           this.runs = sent.runs;
           seq = ++this.seq;
@@ -564,7 +599,7 @@ class ChatHost {
         }
         throw error;
       });
-    this.publish(target.chatId, { type: "message-sent", model: runModel }, state, seq);
+    this.publish(target.chatId, { type: "message-sent", model: runModel, permissionMode: request.permissionMode }, state, seq);
     if (state.sessions[target.sessionId].titlePending) void this.nameChat(projectPath, target.sessionId).catch(() => {});
     const turn = {
       provider: runProvider,
@@ -804,11 +839,11 @@ class ChatHost {
   }
 
   /**
-   * Continues a chat whose last turn the plan's usage limit stopped, after its Project moved to the account named
-   * `label`, on that turn's options. Resolves false when nothing is known of the turn (Milagre restarted since) or
+   * Continues a chat whose last turn the plan's usage limit stopped, after its Project moved to `provider`'s account
+   * named `label`, on that turn's options. Its message shows as a line, not as something the user typed. Resolves false when nothing is known of the turn (Milagre restarted since) or
    * the chat runs again: the user sends their message again then.
    */
-  async continueAfterLimit(projectPath, sessionId, label) {
+  async continueAfterLimit(projectPath, sessionId, provider, label) {
     const chatId = chatKey(projectPath, sessionId);
     const turn = this.turns.get(chatId);
     if (this.runs[chatId] || !turn) return false;
@@ -816,11 +851,13 @@ class ChatHost {
     if (!session) return false;
     const { prompt, ...options } = turn;
     // A session holds the message the limit stopped; one that never started gets the message again.
+    const context = { kind: "account-switch", provider, label };
     await this.send({
       ...options,
       projectPath,
       sessionId,
-      body: `Switched to ${label} after the usage limit. Continue where you left off.`,
+      body: accountSwitchText(context),
+      context,
       prompt: session.native_session_id ? LIMIT_PROMPT : prompt,
       images: [],
       files: [],

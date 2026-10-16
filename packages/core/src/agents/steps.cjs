@@ -57,16 +57,17 @@ function blocksText(content) {
 const isArtifactTool = (server, tool) => server === "milagre" && ["design_show", "design_apply", "artifact_show"].includes(tool);
 const artifactTitle = (title, tool) =>
   `${tool === "design_apply" ? "Edited" : "Showed"} ${code(title || (tool === "artifact_show" ? "an artifact" : "a design"))}`;
-const artifactStep = (step, title, tool) => step("artifact", artifactTitle(title, tool));
+// The step names its tool: the Designs canvas opens when a design tool starts, not for an artifact page.
+const artifactStep = (step, title, tool) => ({ ...step("artifact", artifactTitle(title, tool)), tool });
 // Resolving a comment the user left on a design reads as that, not as a tool call.
 const isResolveTool = (server, tool) => server === "milagre" && tool === "artifact_resolve_comment";
 
-// The artifact a finished design tool made, from its result text.
+// The artifact a finished design tool made, from the first line of its result: the JSON summary. Attached images follow it.
 function artifactRef(text) {
   try {
-    const { id, version, title, format } = JSON.parse(text);
+    const { id, version, title, format, group } = JSON.parse(String(text).split("\n", 1)[0]);
     return typeof id === "string" && Number.isInteger(version) && typeof title === "string"
-      ? { id, version, title, ...(["design", "html"].includes(format) ? { format } : {}) }
+      ? { id, version, title, ...(["design", "html"].includes(format) ? { format } : {}), ...(typeof group === "string" && group ? { group } : {}) }
       : undefined;
   } catch {
     return undefined;

@@ -10,7 +10,6 @@ const {
   ipcMain,
   Menu,
   nativeImage,
-  nativeTheme,
   Notification,
   shell,
   protocol,
@@ -27,9 +26,10 @@ const { loadLoginEnvironment } = require("@milagre/core/agents/environment");
 const { detectEditors, openInEditor, requireWorktreeRoot } = require("@milagre/core/editors");
 const { copyImage, saveImage } = require("./generated-images.cjs");
 const { revealFolder } = require("./reveal.cjs");
-const { applyTranslucency, OPAQUE_BACKGROUND } = require("./window-translucency.cjs");
+const { applyWindowBackground, OPAQUE_BACKGROUND } = require("./window-background.cjs");
 const { guardNavigation } = require("./links.cjs");
 const { forwardAppShortcuts } = require("./app-shortcuts.cjs");
+const { windowChrome } = require("./window-chrome.cjs");
 const { AttentionNotifier } = require("./notifications.cjs");
 const { createDeviceNotices } = require("./device-notices.cjs");
 const { createMediaHandler } = require("./media.cjs");
@@ -219,8 +219,11 @@ async function startDesktop() {
   const openChatFromNotification = (chatId) => openFromNotification("notification:open-chat", chatId);
 
   const notifier = new AttentionNotifier({
-    createNotification: ({ title, subtitle, body }) => new Notification({ title, body, ...(subtitle ? { subtitle } : {}) }),
+    createNotification: ({ title, subtitle, body, silent }) =>
+      new Notification({ title, body, ...(subtitle ? { subtitle } : {}), ...(silent ? { silent } : {}) }),
     isAppFocused: () => Boolean(mainWindow?.isFocused()),
+    canPlayChime: () => Boolean(mainWindow && !mainWindow.isDestroyed()),
+    playChime: (chime) => mainWindow?.webContents.send("notification:play-chime", chime),
     openChat: openChatFromNotification,
     openPhoneSettings: () => openFromNotification("notification:open-phone-settings"),
     setBadge: (value) => app.dock?.setBadge(value),
@@ -232,13 +235,16 @@ async function startDesktop() {
     notifyWhenWaiting = on === true;
   });
 
+  // The window reports the Experimental notification chime too, and plays it when a chat's notification asks.
+  ipcMain.handle("settings:notification-chime", (_event, chime) => notifier.setChime(chime));
+
   ipcMain.handle("notification:state", (_event, state) => notifier.sync(state));
   ipcMain.handle("notification:completed", (_event, notice) => (Notification.isSupported() ? notifier.notifyCompletion(notice) : false));
 
-  // The "Translucent window" appearance setting, pushed by the renderer with the theme it resolved.
-  ipcMain.handle("settings:window-translucent", (event, { on, theme, background } = {}) => {
+  // The theme's page color, pushed by the renderer whenever its theme resolves.
+  ipcMain.handle("settings:window-background", (event, background) => {
     const window = BrowserWindow.fromWebContents(event.sender);
-    if (window && !window.isDestroyed()) applyTranslucency({ window, nativeTheme }, { on: on === true, theme, background });
+    if (window && !window.isDestroyed()) applyWindowBackground(window, background);
   });
 
   let connectionState = { connected: true };
@@ -407,6 +413,7 @@ async function startDesktop() {
   const { getWindowState, manageWindowState } = require("./window-state.cjs");
   function createWindow() {
     const { state, statePath } = getWindowState();
+    const chrome = windowChrome(process.platform, app.commandLine.getSwitchValue("window-decoration") === "overlay");
     const window = new BrowserWindow({
       width: state.width,
       height: state.height,
@@ -417,11 +424,12 @@ async function startDesktop() {
       title: "Milagre",
       icon: appIconPath,
       backgroundColor: OPAQUE_BACKGROUND,
-      ...(process.platform === "darwin" ? { titleBarStyle: "hidden", trafficLightPosition: { x: 24, y: 22 } } : {}),
+      ...chrome.options,
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         contextIsolation: true,
         nodeIntegration: false,
+        additionalArguments: [`--milagre-window-controls=${chrome.controls}`],
       },
     });
     mainWindow = window;
