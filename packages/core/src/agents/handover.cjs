@@ -45,7 +45,8 @@ function renderTranscript(state, sessionId, { after } = {}) {
     } else if (message.context?.kind === "worktree-linked" || message.context?.kind === "account-switch" || message.context?.kind === "reload") {
       parts.push(`## ${message.body}`);
     } else if (message.context?.kind === "routine-run") {
-      parts.push(`## ${routineRunText(message.context)}`);
+      // The heading, then what the beat asked.
+      parts.push(`## ${routineRunText(message.context)}`, ...(message.body?.trim() ? [message.body] : []));
     } else if (message.context?.kind === "compaction") {
       parts.push(`## ${compactionText(message.context)}`);
     } else if (message.role === "assistant") {

@@ -251,9 +251,12 @@ test("a heartbeat is a heading in the transcript, not a user turn", () => {
   const state = {
     sessions: { 3: { id: 3, worktree_id: 1, agent_name: "main", status: "Created", provider: "claude" } },
     worktrees: { 1: { id: 1, name: "main", path: "/work/app" } },
-    messages: [{ id: 1, session_id: 3, role: "user", body: "Heartbeat", context: { kind: "routine-run", routineId: "r", runId: "x", name: "Babysit", at } }],
+    messages: [
+      { id: 1, session_id: 3, role: "user", body: "Check CI on PR 77", context: { kind: "routine-run", routineId: "r", runId: "x", name: "Babysit", at } },
+    ],
   };
   const text = renderTranscript(state, 3);
-  assert.match(text, /## Heartbeat · \d\d:\d\d\n/);
+  // The heading, then what the beat asked.
+  assert.match(text, /## Heartbeat · \d\d:\d\d\n\nCheck CI on PR 77\n/);
   assert.doesNotMatch(text, /## User/);
 });
