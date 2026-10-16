@@ -127,3 +127,20 @@ test("patchRunContext patches the divider of that Run", async () => {
     [3],
   );
 });
+
+test("send says whether the Chat was unread, and patchRunContext hands a session patch on", async () => {
+  const { adapter, patched } = fixture();
+  state.sessions[2].unread = true;
+  try {
+    const result = await adapter.send(chatId, { body: "Check CI", prompt: "Check CI", context: { kind: "routine-run", routineId: "r1", runId: "run-2" } });
+    assert.equal(result.unread, true);
+  } finally {
+    delete state.sessions[2].unread;
+  }
+  assert.equal(
+    (await adapter.send(chatId, { body: "Check CI", prompt: "Check CI", context: { kind: "routine-run", routineId: "r1", runId: "run-3" } })).unread,
+    false,
+  );
+  await adapter.patchRunContext(chatId, "run-1", { quiet: true }, { unread: false });
+  assert.deepEqual(patched[0][4], { unread: false });
+});

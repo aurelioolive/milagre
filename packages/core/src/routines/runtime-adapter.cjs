@@ -66,16 +66,19 @@ function routineChats({ chats, store, cachedState, openState, isClosing }) {
         sessionId,
         worktreeId: target.worktree_id,
       });
-      return { started };
+      // Whether the Chat was unread before the beat, so a quiet one can leave it that way.
+      return { started, unread: target.unread === true };
     },
     // Called on the turn's end, which is published after it was folded into the saved reply (ChatHost.receive).
     replyText: (chatId) => routineReply(cachedState(projectOfKey(chatId)), sessionIdFromKey(chatId)),
-    async patchRunContext(chatId, runId, patch) {
+    // `session` patches the Chat in the same change (see ChatHost.patchMessageContext).
+    async patchRunContext(chatId, runId, patch, session) {
       await chats.patchMessageContext(
         projectOfKey(chatId),
         sessionIdFromKey(chatId),
         (message) => message.role === "user" && message.context?.kind === "routine-run" && message.context.runId === runId,
         patch,
+        session,
       );
     },
   };

@@ -470,3 +470,26 @@ test("a repeated failure to start marks the turn end that follows quiet, whichev
   ctx.scheduler.observe("c1", user);
   assert.equal("quiet" in user, false);
 });
+
+test("a quiet beat puts back the unread mark the Chat had when the beat was sent", async () => {
+  const sessions = [];
+  const ctx = setup({
+    chatOptions: {
+      send: async () => ({ started: Promise.resolve({ turnId: "t1" }), unread: true }),
+      async patchRunContext(_chatId, _runId, _patch, session) {
+        sessions.push(session);
+      },
+    },
+  });
+  due(ctx);
+  await ctx.scheduler.tick();
+  ctx.state.reply = "(pass) fine";
+  ctx.scheduler.observe("c1", { type: "turn-started" });
+  ctx.scheduler.observe("c1", { type: "turn-completed" });
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  ctx.state.reply = "Fixed it.";
+  ctx.scheduler.observe("c1", { type: "turn-started" });
+  ctx.scheduler.observe("c1", { type: "turn-completed" });
+  assert.deepEqual(sessions, [{ unread: true }, undefined]);
+});

@@ -8,7 +8,8 @@ const PASS_HINT = '\n\nIf nothing needs doing, reply starting with "(pass)" and 
 /**
  * Sends each due heartbeat into its Chat and records how the turn went. `chats` is the adapter the runtime builds:
  * exists, archived, busy (a turn open, preparing, or an approval or question pending), send (resolves once the message
- * is accepted, with a `started` promise for the turn), replyText and patchRunContext.
+ * is accepted, with a `started` promise for the turn and whether the Chat was `unread` before it), replyText and
+ * patchRunContext.
  */
 function createRoutineScheduler({
   store,
@@ -76,7 +77,7 @@ function createRoutineScheduler({
     const context = { kind: "routine-run", routineId: routine.id, runId: run.id, name: routine.name, at: now() };
     let started;
     try {
-      ({ started } = await chats.send(chatId, { body: routine.prompt, prompt: routine.prompt + PASS_HINT, context }));
+      ({ started, unread: entry.unread = false } = await chats.send(chatId, { body: routine.prompt, prompt: routine.prompt + PASS_HINT, context }));
     } catch (error) {
       pending.delete(chatId);
       finish(run, chatId, { status: "failed", error: error?.message ?? String(error) });
@@ -163,9 +164,9 @@ function createRoutineScheduler({
     timer = null;
   }
 
-  function patchContext(chatId, runId, patch) {
+  function patchContext(chatId, runId, patch, session) {
     try {
-      Promise.resolve(chats.patchRunContext(chatId, runId, patch)).catch((error) => console.warn("[routines] patchRunContext failed", error));
+      Promise.resolve(chats.patchRunContext(chatId, runId, patch, session)).catch((error) => console.warn("[routines] patchRunContext failed", error));
     } catch (error) {
       console.warn("[routines] patchRunContext failed", error);
     }
@@ -215,7 +216,9 @@ function createRoutineScheduler({
     } else if (failedAgain(finish(run, chatId, { status: "failed", error: event.type === "turn-failed" ? event.message : "cancelled" }))) {
       event.quiet = true;
     }
-    patchContext(chatId, entry.runId, quiet ? { quiet, summary } : { quiet });
+    // A quiet beat leaves the Chat as unread (or not) as it was before it: its turn's end marked it unread.
+    if (quiet) patchContext(chatId, entry.runId, { quiet, summary }, { unread: entry.unread });
+    else patchContext(chatId, entry.runId, { quiet });
     syncKeepAwake();
     onChange();
   }

@@ -743,9 +743,10 @@ class ChatHost {
 
   /**
    * Merges `patch` into the context of the latest message in Chat `sessionId` that `match(message)` picks (a routine run's
-   * divider once its reply is known) and tells the windows. Resolves true when a message matched.
+   * divider once its reply is known) and tells the windows. `session`, when given, patches the Chat in the same change
+   * (a quiet beat puts back the unread mark its turn's end set). Resolves true when a message matched.
    */
-  async patchMessageContext(projectPath, sessionId, match, patch) {
+  async patchMessageContext(projectPath, sessionId, match, patch, session) {
     let found = false;
     const { state, changed } = await this.states.update(
       projectPath,
@@ -753,7 +754,8 @@ class ChatHost {
         const message = latest.messages.findLast((item) => item.session_id === sessionId && match(item));
         if (!message) return latest;
         found = true;
-        return { ...latest, messages: latest.messages.map((item) => (item === message ? { ...item, context: { ...item.context, ...patch } } : item)) };
+        const next = { ...latest, messages: latest.messages.map((item) => (item === message ? { ...item, context: { ...item.context, ...patch } } : item)) };
+        return session ? patchSession(next, sessionId, session) : next;
       },
       { chats: [sessionId] },
     );

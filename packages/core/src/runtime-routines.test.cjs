@@ -263,3 +263,25 @@ test("a live session's routine tools stop working once the switch is off", async
   }
   assert.deepEqual(await f.list(), []);
 });
+
+test("a quiet beat leaves the Chat's unread mark as it was; a beat that acts marks it unread", async (t) => {
+  const f = await fixture(t);
+  await runTool(f.tool("heartbeat_create"), { name: "Babysit", prompt: "Check CI", every: "5m" });
+  await f.finish("Watching.");
+  const unread = async () => (await f.runtime.invoke("project:snapshot", [f.project])).state.sessions[f.id].unread === true;
+  await eventually(unread);
+  await f.runtime.invoke("chat:patch", [f.project, f.id, { unread: false }]);
+  assert.equal(await unread(), false);
+
+  await f.beat();
+  await waitUntil(() => f.session.turns.length === 2);
+  await f.finish("(pass) CI green");
+  await eventually(async () => (await f.messages()).findLast((message) => message.context?.kind === "routine-run").context.quiet === true);
+  assert.equal(await unread(), false, "a quiet beat leaves no unread mark");
+
+  await f.beat();
+  await waitUntil(() => f.session.turns.length === 3);
+  await f.finish("CI failed, fixing the test.");
+  await eventually(async () => (await latestRun(f)).status === "acted");
+  assert.equal(await unread(), true, "a beat that acts marks the Chat unread");
+});
