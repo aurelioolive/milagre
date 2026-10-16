@@ -78,6 +78,7 @@ const { createProjectRegistry } = require("./project-registry.cjs");
 const { createLinkedWorktrees } = require("./linked-worktrees.cjs");
 const { createUsageReader, readClaudeUsage, readClaudeProfileUsage, readCodexUsage, readAntigravityUsage } = require("./usage.cjs");
 const { createUsageStore, cachedSnapshot } = require("./usage-cache.cjs");
+const { createRoutines } = require("./routines/runtime-adapter.cjs");
 
 const { createFileSearch } = require("./project-files.cjs");
 const git = createGit().read;
@@ -870,7 +871,11 @@ function createRuntime(options) {
 
   // Set up with the accounts below; agent events only arrive after start.
   let limitSwitch = null;
+  // Set up once the Chats are (below); agent events only arrive after start.
+  let routines = null;
   function publishAgentEvent(chatId, event, state, seq) {
+    // First, before anyone hears the event: a heartbeat's "(pass)" marks its turn's end quiet, so no push goes out.
+    routines?.observe(chatId, event);
     options.observeAgentEvent?.(chatId, event);
     // A turn the plan's usage limit stopped marks its account, and may move the Chat to another (auto-switch).
     if (event.type === "turn-failed" && event.limit && limitSwitch)
@@ -1027,6 +1032,30 @@ function createRuntime(options) {
         ),
     },
   });
+
+  // Heartbeats: the daemon sends a Chat's routine prompt back into it on a schedule (routines/runtime-adapter.cjs).
+  routines = createRoutines({
+    file: path.join(dataDir, "routines.json"),
+    chats,
+    keepAwake,
+    emit,
+    cachedState: (scope) =>
+      isLinkScopeKey(scope) ? (linkStore.has(scopeFromKey(scope).linkId) ? linkStore.cached(scopeFromKey(scope).linkId) : undefined) : states.states.get(scope),
+    // A Project not open yet opens here, as a Delegation's does.
+    openState: async (scope, sessionId) => {
+      await linkedState(scope);
+      return scopeStates.load(scope, [sessionId]);
+    },
+    isClosing: () => closing,
+    timers: options.routines,
+  });
+  routines.start();
+  commands.handle("routines:enabled:read", () => routines.read());
+  commands.handle("routines:enabled:save", (_event, value) => routines.save(value === true));
+  commands.handle("routines:list", () => routines.list());
+  commands.handle("routines:update", (_event, id, patch) => routines.update(id, patch));
+  commands.handle("routines:delete", (_event, id) => routines.remove(id));
+  commands.handle("routines:run-now", (_event, id) => routines.runNow(id));
 
   // A Chat stays in memory while its turn runs or prepares, and while a window shows it.
   busyChat = (chatId) => chats.isBusy(chatId) || Boolean(options.isChatFocused?.(chatId));
@@ -1203,6 +1232,7 @@ function createRuntime(options) {
       terminals.closeChat(`${projectPath}#${sessionId}`);
       await advisorDelivery.stop(`${projectPath}#${sessionId}`);
       await advisors.stopChat(`${projectPath}#${sessionId}`);
+      routines.chatArchived(`${projectPath}#${sessionId}`);
     }
     await editProject(projectPath, (state) => patchSession(state, sessionId, patch ?? {}), { chats: [] });
   });
@@ -1410,6 +1440,8 @@ function createRuntime(options) {
       ...require("./advisor-tools.cjs").advisorToolDefinitions(chatId, advisors),
       // Milagre's own Linear sign-in, so agents don't reach for a Linear MCP or connector.
       ...(linear.enabled() ? linearToolDefinitions(linearTools) : []),
+      // Heartbeats on the agent's own Chat, while the Experimental switch is on.
+      ...(routines.enabled() ? routines.definitions(chatId) : []),
     ],
     createMcpServer: ({ toolsFor }) => ({ url: (chatId) => localMcp.chatUrl(chatId, toolsFor), close: async () => {} }),
   });
@@ -1830,6 +1862,7 @@ function createRuntime(options) {
 
   function close() {
     closing = true;
+    routines.stop();
     closed ??= (async () => {
       await localMcp.close();
       await advisorDelivery.close();

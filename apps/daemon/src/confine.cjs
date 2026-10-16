@@ -124,6 +124,13 @@ const PATHS = Object.freeze({
   // Auto-switch after a usage limit names no folder and reaches every Project's accounts: a confined phone only reads it.
   "limits:auto-switch:read": none,
   "limits:auto-switch:save": denied,
+  // Routines send prompts into any Chat on the Mac: a confined phone sees them and the switch, and changes nothing.
+  "routines:enabled:read": none,
+  "routines:list": none,
+  "routines:enabled:save": denied,
+  "routines:update": denied,
+  "routines:delete": denied,
+  "routines:run-now": denied,
   // Issues name no folder. A Project's worktree issues name the Project's folder, like its other reads.
   "linear:issues": none,
   "linear:worktree-issues": ([projectPath]) => [projectPath],

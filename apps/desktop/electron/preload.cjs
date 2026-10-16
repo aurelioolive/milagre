@@ -151,6 +151,13 @@ function makeBridge(invoke, listen, send) {
     saveLinearMoveToStarted: (value) => invoke("linear:move-to-started:save", value),
     readLimitAutoSwitch: () => invoke("limits:auto-switch:read"),
     saveLimitAutoSwitch: (value) => invoke("limits:auto-switch:save", value),
+    readRoutinesEnabled: () => invoke("routines:enabled:read"),
+    saveRoutinesEnabled: (value) => invoke("routines:enabled:save", value),
+    listRoutines: () => invoke("routines:list"),
+    updateRoutine: (id, patch) => invoke("routines:update", id, patch),
+    deleteRoutine: (id) => invoke("routines:delete", id),
+    runRoutineNow: (id) => invoke("routines:run-now", id),
+    onRoutinesChanged: (callback) => listen("routines:changed", callback),
     mcp: {
       accounts: () => invoke("mcp:accounts"),
       check: (provider, accountId) => invoke("mcp:check", provider, accountId),

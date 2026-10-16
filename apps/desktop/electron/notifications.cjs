@@ -122,7 +122,8 @@ class AttentionNotifier {
     }
     if (isTerminal(event)) {
       this.running.delete(chatId);
-      if (event.type !== "turn-cancelled")
+      // A quiet turn (a heartbeat's "(pass)") has nothing to announce.
+      if (event.type !== "turn-cancelled" && !(event.type === "turn-completed" && event.quiet))
         this.completed.set(chatId, {
           failed: event.type === "turn-failed",
           body: event.type === "turn-failed" ? event.message : this.previews.get(chatId) || "Turn completed.",

@@ -11,6 +11,8 @@ import type {
   LinkSendRequest,
   TranscriptState,
   ChatMessage,
+  Routine,
+  RoutineRun,
 } from "@milagre/shared/model";
 import type { Result } from "@milagre/shared/result";
 import type { StatePatch } from "@milagre/shared/state-patch";
@@ -58,6 +60,13 @@ import type { WorktreeStatus } from "./lib/archive";
 import type { PullRequest } from "./model";
 
 /** Which patterns apply to new worktrees, and the files they match in the main checkout. */
+/** What `updateRoutine` may change. `null` drops `maxRuns` or `expiresAt` (a heartbeat keeps at least one). */
+export type RoutineUpdate = Partial<Pick<Routine, "name" | "prompt" | "enabled">> & {
+  cron?: string;
+  timezone?: string;
+  maxRuns?: number | null;
+  expiresAt?: number | null;
+};
 export type FilesToCopy = { source: "worktreeinclude" | "setting" | "default"; worktreeInclude: string | null; matches: string[] };
 
 /** Where the setup command new worktrees run comes from: the repo's .milagre/worktree.json, the project's setting, or nowhere. */
@@ -271,6 +280,15 @@ export type MilagreBridge = {
   /** Experimental: after a usage limit, move the Chat's Project to the next ready account and continue by itself. */
   readLimitAutoSwitch: () => Promise<{ autoSwitch: boolean }>;
   saveLimitAutoSwitch: (value: boolean) => Promise<{ autoSwitch: boolean }>;
+  /** Experimental: agents set heartbeats that send a prompt back into their Chat on a schedule. Off by default. */
+  readRoutinesEnabled: () => Promise<{ enabled: boolean }>;
+  saveRoutinesEnabled: (value: boolean) => Promise<{ enabled: boolean }>;
+  /** This Mac's routines that haven't ended, newest first, each with its latest Runs first. */
+  listRoutines: () => Promise<{ routines: Array<Routine & { runs: RoutineRun[] }> }>;
+  updateRoutine: (id: string, patch: RoutineUpdate) => Promise<Routine>;
+  deleteRoutine: (id: string) => Promise<{ removed: boolean }>;
+  runRoutineNow: (id: string) => Promise<RoutineRun | undefined>;
+  onRoutinesChanged: (callback: (value: { enabled: boolean }) => void) => () => void;
   saveLinearEnabled: (value: boolean) => Promise<{ enabled: boolean }>;
   onLinearStatusChanged: (callback: (status: LinearStatus) => void) => () => void;
   mcp: {

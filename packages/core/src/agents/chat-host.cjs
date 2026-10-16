@@ -741,6 +741,26 @@ class ChatHost {
     if (changed) this.broadcast(projectPath, state);
   }
 
+  /**
+   * Merges `patch` into the context of the latest message in Chat `sessionId` that `match(message)` picks (a routine run's
+   * divider once its reply is known) and tells the windows. Resolves true when a message matched.
+   */
+  async patchMessageContext(projectPath, sessionId, match, patch) {
+    let found = false;
+    const { state, changed } = await this.states.update(
+      projectPath,
+      (latest) => {
+        const message = latest.messages.findLast((item) => item.session_id === sessionId && match(item));
+        if (!message) return latest;
+        found = true;
+        return { ...latest, messages: latest.messages.map((item) => (item === message ? { ...item, context: { ...item.context, ...patch } } : item)) };
+      },
+      { chats: [sessionId] },
+    );
+    if (changed) this.broadcast(projectPath, state);
+    return found;
+  }
+
   /** Stop while a handoff brief is written: no agent session runs yet, so the turn is cancelled here. Resolves true when there was one. */
   async cancelHandoff(chatId) {
     const preparation = this.preparing.get(chatId);

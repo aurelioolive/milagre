@@ -623,6 +623,17 @@ test("a confined phone reads Designs availability but cannot change the host set
   await assert.rejects(confine.checkCall("designs:enabled:save", [false]), { status: 403, message: REFUSED });
 });
 
+// Routines reach every Chat on the Mac: a confined (demo) phone sees them, and changes nothing.
+test("a confined phone reads Routines but can't switch, change, delete or run them", async () => {
+  const confine = createConfinement({ allowedRoot: os.tmpdir() });
+  await confine.checkCall("routines:enabled:read", []);
+  await confine.checkCall("routines:list", []);
+  await assert.rejects(confine.checkCall("routines:enabled:save", [true]), { status: 403, message: REFUSED });
+  await assert.rejects(confine.checkCall("routines:update", ["r1", { enabled: false }]), { status: 403, message: REFUSED });
+  await assert.rejects(confine.checkCall("routines:delete", ["r1"]), { status: 403, message: REFUSED });
+  await assert.rejects(confine.checkCall("routines:run-now", ["r1"]), { status: 403, message: REFUSED });
+});
+
 test("a confined phone reviews designs but cannot apply edits even in its own Project", async () => {
   const confine = createConfinement({ allowedRoot: os.tmpdir() });
   await assert.rejects(confine.checkCall("artifact:apply", [{ chatId: `${os.tmpdir()}#1`, id: "welcome", expectedVersion: 1, operations: [] }]), {
