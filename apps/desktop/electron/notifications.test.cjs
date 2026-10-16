@@ -399,3 +399,15 @@ test("a quiet turn (a heartbeat's pass) leaves no completion alert", () => {
   assert.equal(notifier.notifyCompletion({ chatId: "/shop#2", title: "Fix login" }), true);
   assert.equal(shown.length, 1);
 });
+
+test("a quiet failed turn (a heartbeat failing again) leaves no alert", () => {
+  const { notifier, shown } = setup();
+  notifier.sync({ projectPath: "/shop", activeChatId: "/shop#1", unread: [], notifyOnCompletion: true });
+  notifier.observe("/shop#2", { type: "turn-started" });
+  notifier.observe("/shop#2", { type: "turn-failed", message: "boom", quiet: true });
+  assert.equal(notifier.notifyCompletion({ chatId: "/shop#2", title: "Fix login" }), false);
+  notifier.observe("/shop#2", { type: "turn-started" });
+  notifier.observe("/shop#2", { type: "turn-failed", message: "boom" });
+  assert.equal(notifier.notifyCompletion({ chatId: "/shop#2", title: "Fix login" }), true);
+  assert.equal(shown.length, 1);
+});

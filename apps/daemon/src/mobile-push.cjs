@@ -251,8 +251,8 @@ function createMobilePush({ dataDir, send, context, isChatFocused = () => false,
       } else if (isTurnEnd(event) && !run.ended) {
         run.ended = true;
         run.requests.clear();
-        // A quiet turn (a heartbeat's "(pass)") has nothing to announce.
-        if (event.type === "turn-cancelled" || (event.type === "turn-completed" && event.quiet)) return;
+        // A quiet turn (a heartbeat's "(pass)", or one failing again) has nothing to announce.
+        if (event.type === "turn-cancelled" || event.quiet) return;
         // A turn that ends while the chat's background subagents still work isn't the end of the work.
         if (event.type === "turn-completed" && background.get(chatId)?.size) held.set(chatId, { run, event });
         else deliver(chatId, run, event);

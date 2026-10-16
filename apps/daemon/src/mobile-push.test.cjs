@@ -434,3 +434,17 @@ test("a quiet turn sends no completion push; the same turn without quiet sends o
   assert.equal(messages.length, 1);
   assert.equal(messages[0].body, "CI failed, fixing.");
 });
+
+// A heartbeat that fails again after a failed beat is marked quiet too: one push for a broken heartbeat, not one per beat.
+test("a quiet failed turn sends no push; a failed turn without quiet sends one", async (t) => {
+  const { push, messages } = await fixture(t);
+  await push.register(registration());
+  push.observe(chatId, { type: "turn-started", turnId: "beat-1" });
+  push.observe(chatId, { type: "turn-failed", message: "Claude Code isn't installed.", quiet: true });
+  await push.settled();
+  assert.equal(messages.length, 0);
+  push.observe(chatId, { type: "turn-started", turnId: "beat-2" });
+  push.observe(chatId, { type: "turn-failed", message: "Claude Code isn't installed." });
+  await push.settled();
+  assert.equal(messages.length, 1);
+});

@@ -403,3 +403,70 @@ test("a turn that fails after the beat's message is sent but before it starts fi
   assert.equal(ctx.calls.send.length, 2);
   assert.equal(lastRun(ctx).status, "running");
 });
+
+test("a failed beat after a failed beat is quiet, and the third failure in a row ends the heartbeat", async () => {
+  const ctx = setup();
+  const failBeat = () => {
+    const event = { type: "turn-failed", message: "boom" };
+    ctx.scheduler.observe("c1", { type: "message-sent" });
+    ctx.scheduler.observe("c1", { type: "turn-started" });
+    ctx.scheduler.observe("c1", event);
+    return event;
+  };
+  due(ctx);
+  await ctx.scheduler.tick();
+  assert.equal("quiet" in failBeat(), false, "the first failure is announced");
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  assert.equal(failBeat().quiet, true, "the second failure in a row is not");
+
+  // An acted beat resets the streak.
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  ctx.state.reply = "Fixed it.";
+  ctx.scheduler.observe("c1", { type: "turn-started" });
+  ctx.scheduler.observe("c1", { type: "turn-completed" });
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  assert.equal("quiet" in failBeat(), false);
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  assert.equal(failBeat().quiet, true);
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  assert.equal(failBeat().quiet, true);
+  assert.deepEqual(ctx.store.list(), []);
+  assert.equal(lastRun(ctx).error, "boom · 3 failed beats in a row");
+});
+
+test("a repeated failure to start marks the turn end that follows quiet, whichever comes first", async () => {
+  const ctx = setup();
+  ctx.state.startResult = { turnId: null, steered: false };
+  due(ctx);
+  await ctx.scheduler.tick();
+  await settle();
+  const first = { type: "turn-failed", message: "no CLI" };
+  ctx.scheduler.observe("c1", { type: "message-sent" });
+  ctx.scheduler.observe("c1", first);
+  assert.equal("quiet" in first, false);
+
+  // The start resolves before its turn-failed is published.
+  let resolveStarted;
+  ctx.state.startResult = new Promise((resolve) => (resolveStarted = resolve));
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  ctx.scheduler.observe("c1", { type: "message-sent" });
+  resolveStarted({ turnId: null, steered: false });
+  await settle();
+  assert.equal(lastRun(ctx).status, "failed");
+  const second = { type: "turn-failed", message: "no CLI" };
+  ctx.scheduler.observe("c1", second);
+  assert.equal(second.quiet, true);
+
+  // A later turn of the user's isn't touched.
+  const user = { type: "turn-failed", message: "user's" };
+  ctx.scheduler.observe("c1", { type: "message-sent" });
+  ctx.scheduler.observe("c1", { type: "turn-started" });
+  ctx.scheduler.observe("c1", user);
+  assert.equal("quiet" in user, false);
+});

@@ -329,6 +329,8 @@ export interface Routine {
   nextRunAt?: number | null;
   lastRunAt?: number;
   runCount: number;
+  /** Counted Runs in a row that failed; three end the heartbeat. */
+  failedStreak?: number;
   completedAt?: number;
   createdAt: number;
   updatedAt: number;

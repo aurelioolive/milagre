@@ -2,6 +2,7 @@ const { isTurnEnd } = require("@milagre/shared/agent-runs");
 const { parsePass } = require("@milagre/shared/routines");
 
 const TICK_MS = 1000;
+const BUSY = "chat was busy";
 const PASS_HINT = '\n\nIf nothing needs doing, reply starting with "(pass)" and a short reason.';
 
 /**
@@ -25,6 +26,8 @@ function createRoutineScheduler({
   let ticking = false;
   let swept = false;
   let awake = null;
+  // Chats whose beat failed to start again, its turn end not yet published: that end is marked quiet when it comes.
+  const silenced = new Set();
 
   function syncKeepAwake() {
     const active = store.enabled() && store.list().some((routine) => routine.enabled);
@@ -33,9 +36,14 @@ function createRoutineScheduler({
     keepAwake.setRoutinesActive(active);
   }
 
+  // Resolves with the Routine as the Run left it, or null when the Run was already finished.
   function finish(run, chatId, outcome) {
-    store.finishRun(run.id, { chatId, ...outcome });
+    return store.finishRun(run.id, { chatId, ...outcome });
   }
+
+  // A failed beat right after another failed beat tells no one: the first failure was announced (store.cjs ends the
+  // heartbeat on the third).
+  const failedAgain = (routine) => (routine?.failedStreak ?? 0) >= 2;
 
   function chatGone(chatId) {
     return !chats.exists(chatId) || chats.archived(chatId);
@@ -78,7 +86,7 @@ function createRoutineScheduler({
     // message steered into a turn already running belongs to that turn, which isn't the beat's to classify.
     Promise.resolve(started).then(
       (result) => {
-        if (result?.steered) release(chatId, entry, "chat was busy");
+        if (result?.steered) release(chatId, entry, BUSY);
         else if (!result?.turnId) release(chatId, entry, "turn did not start");
         return null;
       },
@@ -86,11 +94,16 @@ function createRoutineScheduler({
     );
   }
 
-  // Ends a pending Run that no turn end will finish.
-  function release(chatId, entry, error) {
+  // Ends a pending Run that no turn end will finish. `event` is the turn end that says so, when one did.
+  function release(chatId, entry, error, event) {
     if (pending.get(chatId) !== entry) return;
     pending.delete(chatId);
-    finish({ id: entry.runId }, chatId, { status: "failed", error });
+    const routine = finish({ id: entry.runId }, chatId, { status: "failed", error });
+    if (failedAgain(routine)) {
+      if (event) event.quiet = true;
+      // A beat that steered into someone else's turn has no turn end of its own to silence.
+      else if (error !== BUSY) silenced.add(chatId);
+    }
     syncKeepAwake();
     onChange();
   }
@@ -160,6 +173,13 @@ function createRoutineScheduler({
 
   // Runs synchronously: it marks the event quiet before the runtime broadcasts it.
   function observe(chatId, event) {
+    if (silenced.has(chatId)) {
+      if (event.type === "message-sent" || event.type === "turn-started") silenced.delete(chatId);
+      else if (isTurnEnd(event) && event.type !== "turn-completed") {
+        silenced.delete(chatId);
+        event.quiet = true;
+      }
+    }
     const entry = pending.get(chatId);
     if (!entry) return;
     if (event.type === "message-sent") {
@@ -174,7 +194,8 @@ function createRoutineScheduler({
     if (!entry.turnStarted) {
       // A turn end before the beat's message is the Chat's previous turn, published late. One after it, before any
       // turn-started, is the beat's turn failing to start (no agent CLI, Stop while it started).
-      if (entry.sent && event.type !== "turn-completed") release(chatId, entry, event.type === "turn-failed" ? (event.message ?? "turn failed") : "cancelled");
+      if (entry.sent && event.type !== "turn-completed")
+        release(chatId, entry, event.type === "turn-failed" ? (event.message ?? "turn failed") : "cancelled", event);
       return;
     }
     pending.delete(chatId);
@@ -191,10 +212,8 @@ function createRoutineScheduler({
       } else {
         finish(run, chatId, { status: "acted" });
       }
-    } else if (event.type === "turn-failed") {
-      finish(run, chatId, { status: "failed", error: event.message });
-    } else {
-      finish(run, chatId, { status: "failed", error: "cancelled" });
+    } else if (failedAgain(finish(run, chatId, { status: "failed", error: event.type === "turn-failed" ? event.message : "cancelled" }))) {
+      event.quiet = true;
     }
     patchContext(chatId, entry.runId, quiet ? { quiet, summary } : { quiet });
     syncKeepAwake();

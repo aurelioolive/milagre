@@ -388,3 +388,27 @@ test("startRun returns null for unknown and completed Routines", () => {
   store.complete(routine.id, "done");
   assert.equal(store.startRun(routine.id, clock.t), null);
 });
+
+test("three failed Runs in a row complete the heartbeat; an acted or quiet Run resets the streak", () => {
+  const { store } = setup();
+  const routine = store.upsertHeartbeat(base);
+  const beat = (status, extra = {}) => {
+    const { run } = store.startRun(routine.id, START);
+    return store.finishRun(run.id, { status, ...extra });
+  };
+  assert.equal(beat("failed", { error: "boom" }).failedStreak, 1);
+  assert.equal(beat("failed", { error: "boom" }).failedStreak, 2);
+  assert.equal(beat("skipped-busy").failedStreak, 2);
+  assert.equal(beat("quiet").failedStreak, 0);
+  beat("failed", { error: "boom" });
+  beat("acted");
+  beat("failed", { error: "boom" });
+  beat("failed", { error: "boom" });
+  assert.ok(!store.get(routine.id).completedAt);
+  const ended = beat("failed", { error: "no CLI" });
+  assert.equal(ended.failedStreak, 3);
+  assert.ok(ended.completedAt);
+  assert.equal(ended.enabled, false);
+  assert.deepEqual(store.list(), []);
+  assert.equal(store.runs(routine.id)[0].error, "no CLI · 3 failed beats in a row");
+});

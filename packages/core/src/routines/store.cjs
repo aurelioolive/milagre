@@ -11,6 +11,8 @@ const UPDATABLE = new Set(["name", "prompt", "cron", "timezone", "maxRuns", "exp
 // These end a run's life in a count: skipped-busy and missed runs never ran, so they are not counted.
 const FINISH_STATUSES = new Set(["acted", "quiet", "failed", "skipped-busy"]);
 const COUNTED = new Set(["acted", "quiet", "failed"]);
+// A heartbeat that keeps failing (no agent CLI, a Chat that can't take turns) ends itself rather than fail forever.
+const MAX_FAILED_IN_A_ROW = 3;
 
 function parseExpiresIn(value) {
   const match = typeof value === "string" ? /^(\d+)([mhd])$/.exec(value) : null;
@@ -36,7 +38,15 @@ function finish(routine, run, status, extra, at) {
   routine.lastRunAt = run.startedAt;
   routine.updatedAt = at;
   if (COUNTED.has(status)) routine.runCount += 1;
-  if (routine.maxRuns !== undefined && routine.runCount >= routine.maxRuns && !routine.completedAt) markCompleted(routine, at);
+  // How many counted Runs in a row failed: skipped-busy and missed ones neither break nor extend it.
+  if (status === "failed") routine.failedStreak = (routine.failedStreak ?? 0) + 1;
+  else if (COUNTED.has(status)) routine.failedStreak = 0;
+  if (routine.completedAt) return;
+  if (routine.maxRuns !== undefined && routine.runCount >= routine.maxRuns) markCompleted(routine, at);
+  else if (routine.failedStreak >= MAX_FAILED_IN_A_ROW) {
+    run.error = `${run.error ?? "failed"} · ${MAX_FAILED_IN_A_ROW} failed beats in a row`;
+    markCompleted(routine, at);
+  }
 }
 
 function empty() {
