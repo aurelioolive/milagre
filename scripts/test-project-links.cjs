@@ -74,8 +74,11 @@ async function main() {
       turnActive: false,
       async startTurn() {
         providerCalls++;
-        assert.equal(context.workspaceRoots.length, 2);
-        for (const member of context.workspaceRoots) await fs.writeFile(path.join(member, "status.txt"), "Shared edit\n");
+        // A shared Chat starts with no Worktree: the agent makes one in each Project it is about to change.
+        const create = context.linked.tools.find((tool) => tool.name === "link_worktree_create");
+        for (const project of projects) await create.run({ project: path.basename(project) });
+        assert.equal(context.access.roots.length, 2);
+        for (const member of context.access.roots) await fs.writeFile(path.join(member, "status.txt"), "Shared edit\n");
         context.emit({ type: "session-started", nativeId: "shared-session" });
         context.emit({ type: "turn-started", turnId: "turn" });
         context.emit({ type: "text-delta", messageId: `reply-${providerCalls}`, text: "Updated status.txt in both owned Worktrees." });
@@ -485,13 +488,17 @@ async function main() {
       false,
       "Explicit new Chat selection must survive a scope switch",
     );
+    // A Project's setup runs when the agent makes its Worktree, during the turn.
     const setupGate = path.join(dir, "setup-ready");
     await client.call("worktree-setup:save", [projects[0], `while test ! -f '${setupGate}'; do sleep 0.1; done`]);
     await evaluate(`document.querySelector('button[aria-label="New chat"]').click()`);
     await input('textarea[aria-label="Prompt"]', "Slow new shared Chat");
     await evaluate(`document.querySelector('button[aria-label="Send"]').click()`);
     await waitFor(
-      async () => Object.values((await client.call("link:snapshot", [link.id])).state.preparations).some((prep) => prep.status === "setup"),
+      async () =>
+        Object.values((await client.call("link:snapshot", [link.id])).state.preparations).some((prep) =>
+          prep.members.some((member) => member.setupStarted && !member.setupDone),
+        ),
       "slow preparation started",
     );
     await evaluate(`document.querySelector('button[aria-label="New chat"]').click()`);
@@ -510,7 +517,10 @@ async function main() {
     await input('textarea[aria-label="Prompt"]', "Send then switch scope");
     await evaluate(`document.querySelector('button[aria-label="Send"]').click()`);
     await waitFor(
-      async () => Object.values((await client.call("link:snapshot", [link.id])).state.preparations).some((prep) => prep.status === "setup"),
+      async () =>
+        Object.values((await client.call("link:snapshot", [link.id])).state.preparations).some((prep) =>
+          prep.members.some((member) => member.setupStarted && !member.setupDone),
+        ),
       "scope-switch preparation",
     );
     await selector();

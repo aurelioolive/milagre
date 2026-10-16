@@ -406,6 +406,7 @@ function createRuntime(options) {
     validateLink: async (id) => {
       const members = await linkWorkspaces.membersAvailable(await linkRuntime.definition(id));
       for (const member of members) await ownProject(member.path);
+      return members;
     },
   });
   function broadcastProjectState(projectPath, state) {
@@ -1408,11 +1409,24 @@ function createRuntime(options) {
       ...htmlArtifactToolDefinitions(chatId, artifacts),
       ...artifactCommentToolDefinitions(chatId, artifacts),
       ...require("./advisor-tools.cjs").advisorToolDefinitions(chatId, advisors),
+      ...require("./link-worktree-tools.cjs").linkWorktreeToolDefinitions(chatId, createLinkWorktree),
       // Milagre's own Linear sign-in, so agents don't reach for a Linear MCP or connector.
       ...(linear.enabled() ? linearToolDefinitions(linearTools) : []),
     ],
     createMcpServer: ({ toolsFor }) => ({ url: (chatId) => localMcp.chatUrl(chatId, toolsFor), close: async () => {} }),
   });
+  // link_worktree_create: a shared Link Chat's Worktree in one Project, made when its agent is about to change it. The
+  // running agent owns it at once, the Link's windows show it, and the Project lists it as the shared Chat's.
+  async function createLinkWorktree({ chatId, linkId, sessionId, project }) {
+    const made = await linkWorkspaces.addLinkWorktree({ link: await linkRuntime.definition(linkId), chatId: sessionId, project });
+    if (made.created) {
+      const scope = projectOfKey(chatId);
+      agents.updateWorkspace(chatId, await scopeStates.executionContext(scope, sessionId));
+      broadcastProjectState(scope, await linkStore.get(linkId));
+      if (states.has(made.member.projectPath)) await readProject(made.member.projectPath).catch(() => {});
+    }
+    return made;
+  }
   const advisorStore = require("./advisor-store.cjs").createAdvisorStore({ dataDir });
   const advisorTransports = new Map();
   const advisorMcp = require("./linked-mcp-server.cjs").createLinkedMcpServer({ toolsFor: (id) => advisorTransports.get(id) ?? [] });
