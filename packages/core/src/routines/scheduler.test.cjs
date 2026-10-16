@@ -289,7 +289,7 @@ test("tick expires a Routine past its expiresAt before claiming", async () => {
 test("ticks never overlap", async () => {
   let release;
   const gate = new Promise((resolve) => (release = resolve));
-  const ctx = setup({ chatOptions: { send: async (chatId, message) => (await gate, { started: Promise.resolve({ turnId: "t" }) }) } });
+  const ctx = setup({ chatOptions: { send: async () => (await gate, { started: Promise.resolve({ turnId: "t" }) }) } });
   due(ctx);
   const first = ctx.scheduler.tick();
   await ctx.scheduler.tick();

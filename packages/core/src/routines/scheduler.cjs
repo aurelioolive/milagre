@@ -83,6 +83,7 @@ function createRoutineScheduler({
     Promise.resolve(started).then(
       (result) => {
         if (result == null) notStarted("turn did not start");
+        return null;
       },
       (error) => notStarted(error?.message ?? String(error)),
     );
