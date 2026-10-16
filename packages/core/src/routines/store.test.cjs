@@ -451,3 +451,20 @@ test("setting a heartbeat again without an end keeps the end it had", () => {
   // A new end given replaces the old one.
   assert.equal(store.upsertHeartbeat({ ...base, expiresIn: "1h" }).expiresAt, clock.t + 3600_000);
 });
+
+test("a file that can't be read throws instead of starting empty, so no save wipes it", () => {
+  const { dir, file, options } = setup();
+  fs.mkdirSync(file);
+  assert.throws(() => createRoutineStore(options), /EISDIR/);
+  fs.rmdirSync(file);
+  if (process.getuid?.() === 0) return;
+  fs.writeFileSync(file, JSON.stringify({ version: 1, enabled: true, routines: [], runs: {} }));
+  fs.chmodSync(file, 0o000);
+  try {
+    assert.throws(() => createRoutineStore(options), /EACCES/);
+  } finally {
+    fs.chmodSync(file, 0o600);
+  }
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).enabled, true);
+  assert.ok(fs.existsSync(dir));
+});
