@@ -3628,6 +3628,32 @@ test("quiet heartbeats collapse into one line and their replies are hidden", () 
   );
 });
 
+test("the navigation rail skips hidden heartbeat replies and counts what the transcript shows", () => {
+  const screen = chatHost();
+  screen.params.id = "42";
+  const state = screen.session.snapshot.project.state;
+  state.sessions[42] = { id: 42, provider: "claude" };
+  const run = (id, minute, summary) => ({
+    id,
+    session_id: 42,
+    role: "user",
+    body: "Heartbeat",
+    context: { kind: "routine-run", routineId: "r1", runId: `run${id}`, name: "Babysit", at: Date.UTC(2026, 9, 16, 10, minute), quiet: true, summary },
+  });
+  state.messages = [
+    { id: 1, session_id: 42, role: "user", body: "Watch CI" },
+    run(2, 15, "waiting"),
+    { id: 3, session_id: 42, role: "assistant", body: "(pass) waiting" },
+    run(4, 30, "CI green"),
+    { id: 5, session_id: 42, role: "assistant", body: "(pass) CI green" },
+  ];
+  const rail = find(screen.render(), (node) => node.type === "MessageNavigation");
+  assert.equal(rail.props.items.length, 2);
+  assert.match(rail.props.items[0].label, /^Go to user message 1 of 2\. Watch CI$/);
+  assert.match(rail.props.items[1].label, /^Go to 2 quiet checks · last \d\d:\d\d: CI green, 2 of 2\.$/);
+  assert.ok(rail.props.items.every((item) => !item.label.includes("(pass)")));
+});
+
 test("mobile navigation spans a long Chat with at most 15 lines and loads older targets before scrolling", () => {
   const screen = chatHost();
   screen.params.id = "42";

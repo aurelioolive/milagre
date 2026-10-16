@@ -51,7 +51,7 @@ import { AccountSwitchDivider } from "../account-switch-divider";
 import { ChatReloadDivider } from "../chat-reload-divider";
 import { isChatReload, RELOAD_TEXT } from "@milagre/shared/chat-reload";
 import { RoutineRunDivider } from "../routine-run-divider";
-import { groupQuietRuns, isRoutineRun, routineRunText } from "@milagre/shared/routines";
+import { groupQuietRuns, isRoutineRun, mergedRoutineRunText, routineRunText } from "@milagre/shared/routines";
 import { CompactionDivider } from "../compaction-divider";
 import { isHandoff } from "@milagre/shared/handoff";
 import { COMPACT_COMMAND, compactionText, isCompaction } from "@milagre/shared/compaction";
@@ -340,25 +340,31 @@ export default function ChatScreen() {
     }
   }
   const handoffModels = useMemo(() => [...modelsFor("claude", session.models), ...modelsFor("codex", session.models)], [session.models]);
+  // The rail runs over what the transcript shows: hidden (pass) replies and merged-away quiet dividers are not stops.
+  const shownEntries = useMemo(() => groupedMessages.filter((entry) => !entry.hidden), [groupedMessages]);
   const navigationItems = useMemo(
     () =>
-      messageNavigationIndices(messages.length).map((index) => ({
-        index,
-        label: isHandoff(messages[index])
-          ? `Go to ${handoffSides(messages[index].context, handoffModels).restored ? "context restored" : "context handoff"} ${index + 1} of ${messages.length}.`
-          : isWorktreeLinked(messages[index])
-            ? `Go to ${worktreeLinkText(messages[index].context)}, ${index + 1} of ${messages.length}.`
-            : isCompaction(messages[index])
-              ? `Go to ${compactionText(messages[index].context)}, ${index + 1} of ${messages.length}.`
-              : isAccountSwitch(messages[index])
-                ? `Go to ${accountSwitchText(messages[index].context)}, ${index + 1} of ${messages.length}.`
-                : isChatReload(messages[index])
-                  ? `Go to ${RELOAD_TEXT}, ${index + 1} of ${messages.length}.`
-                  : isRoutineRun(messages[index])
-                    ? `Go to ${routineRunText(messages[index].context)}, ${index + 1} of ${messages.length}.`
-                    : `Go to ${messageSender(messages[index])} message ${index + 1} of ${messages.length}. ${messages[index].body.slice(0, 88)}`,
-      })),
-    [messages, handoffModels],
+      messageNavigationIndices(shownEntries.length).map((index) => {
+        const { message, merged } = shownEntries[index];
+        const position = `${index + 1} of ${shownEntries.length}`;
+        return {
+          index,
+          label: isHandoff(message)
+            ? `Go to ${handoffSides(message.context, handoffModels).restored ? "context restored" : "context handoff"} ${position}.`
+            : isWorktreeLinked(message)
+              ? `Go to ${worktreeLinkText(message.context)}, ${position}.`
+              : isCompaction(message)
+                ? `Go to ${compactionText(message.context)}, ${position}.`
+                : isAccountSwitch(message)
+                  ? `Go to ${accountSwitchText(message.context)}, ${position}.`
+                  : isChatReload(message)
+                    ? `Go to ${RELOAD_TEXT}, ${position}.`
+                    : isRoutineRun(message)
+                      ? `Go to ${merged ? mergedRoutineRunText(merged) : routineRunText(message.context)}, ${position}.`
+                      : `Go to ${messageSender(message)} message ${position}. ${message.body.slice(0, 88)}`,
+        };
+      }),
+    [shownEntries, handoffModels],
   );
   const messagePositions = useRef(new Map<number, number>());
   const navigationTarget = useRef<number | null>(null);
@@ -366,8 +372,11 @@ export default function ChatScreen() {
     messagePositions.current.clear();
     navigationTarget.current = null;
   }, [params.id]);
-  const navigateToMessage = (index: number) => {
-    if (index === messages.length - 1) {
+  const navigateToMessage = (stop: number) => {
+    const target = shownEntries[stop]?.message;
+    const index = target ? messages.indexOf(target) : -1;
+    if (index < 0) return;
+    if (stop === shownEntries.length - 1) {
       navigationTarget.current = null;
       following.current = true;
       scrollToBottom(true);
