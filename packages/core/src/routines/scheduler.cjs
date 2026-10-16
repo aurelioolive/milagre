@@ -18,7 +18,8 @@ function createRoutineScheduler({
   clearInterval: clearTimer = clearInterval,
   onChange = () => {},
 }) {
-  // chatId -> the heartbeat Run in flight there. `turnStarted` flips on turn-started; only then does a terminal event count.
+  // chatId -> the heartbeat Run in flight there. `sent` flips on the beat's message-sent, `turnStarted` on turn-started;
+  // a turn's end only classifies the Run after both.
   const pending = new Map();
   let timer = null;
   let ticking = false;
@@ -62,7 +63,7 @@ function createRoutineScheduler({
       finish(run, chatId, { status: "skipped-busy" });
       return;
     }
-    const entry = { runId: run.id, turnStarted: false };
+    const entry = { runId: run.id, sent: false, turnStarted: false };
     pending.set(chatId, entry);
     const context = { kind: "routine-run", routineId: routine.id, runId: run.id, name: routine.name, at: now() };
     let started;
@@ -73,20 +74,25 @@ function createRoutineScheduler({
       finish(run, chatId, { status: "failed", error: error?.message ?? String(error) });
       return;
     }
-    const notStarted = (error) => {
-      if (pending.get(chatId) !== entry || entry.turnStarted) return;
-      pending.delete(chatId);
-      finish(run, chatId, { status: "failed", error });
-      syncKeepAwake();
-      onChange();
-    };
+    // No turn of the beat's own will end this Run: a start that failed or was stopped resolves without a turn id, and a
+    // message steered into a turn already running belongs to that turn, which isn't the beat's to classify.
     Promise.resolve(started).then(
       (result) => {
-        if (result == null) notStarted("turn did not start");
+        if (result?.steered) release(chatId, entry, "chat was busy");
+        else if (!result?.turnId) release(chatId, entry, "turn did not start");
         return null;
       },
-      (error) => notStarted(error?.message ?? String(error)),
+      (error) => release(chatId, entry, error?.message ?? String(error)),
     );
+  }
+
+  // Ends a pending Run that no turn end will finish.
+  function release(chatId, entry, error) {
+    if (pending.get(chatId) !== entry) return;
+    pending.delete(chatId);
+    finish({ id: entry.runId }, chatId, { status: "failed", error });
+    syncKeepAwake();
+    onChange();
   }
 
   async function dispatchAll(claims) {
@@ -156,11 +162,21 @@ function createRoutineScheduler({
   function observe(chatId, event) {
     const entry = pending.get(chatId);
     if (!entry) return;
+    if (event.type === "message-sent") {
+      entry.sent = true;
+      return;
+    }
     if (event.type === "turn-started") {
       entry.turnStarted = true;
       return;
     }
-    if (!entry.turnStarted || !isTurnEnd(event)) return;
+    if (!isTurnEnd(event)) return;
+    if (!entry.turnStarted) {
+      // A turn end before the beat's message is the Chat's previous turn, published late. One after it, before any
+      // turn-started, is the beat's turn failing to start (no agent CLI, Stop while it started).
+      if (entry.sent && event.type !== "turn-completed") release(chatId, entry, event.type === "turn-failed" ? (event.message ?? "turn failed") : "cancelled");
+      return;
+    }
     pending.delete(chatId);
     const run = { id: entry.runId };
     let quiet = false;

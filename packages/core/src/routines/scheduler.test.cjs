@@ -333,3 +333,73 @@ test("runNow starts a Run outside the schedule and reports it", async () => {
   assert.equal(busy.status, "skipped-busy");
   await assert.rejects(() => ctx.scheduler.runNow("nope"));
 });
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+const nextBeat = (ctx) => (ctx.clock.t = ctx.store.get(ctx.routine.id).nextRunAt);
+
+test("a send that resolves without a turn id finishes failed and the next beat is sent", async () => {
+  const ctx = setup();
+  ctx.state.startResult = { turnId: null, steered: false };
+  due(ctx);
+  await ctx.scheduler.tick();
+  await settle();
+  assert.equal(lastRun(ctx).status, "failed");
+  assert.equal(lastRun(ctx).error, "turn did not start");
+
+  ctx.state.startResult = { turnId: "t2", steered: false };
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  assert.equal(ctx.calls.send.length, 2);
+  assert.equal(lastRun(ctx).status, "running");
+  ctx.state.reply = "(pass) fine";
+  ctx.scheduler.observe("c1", { type: "turn-started" });
+  ctx.scheduler.observe("c1", { type: "turn-completed" });
+  assert.equal(lastRun(ctx).status, "quiet");
+});
+
+test("a send that steers into a running turn finishes failed and never classifies that turn", async () => {
+  const ctx = setup();
+  ctx.state.startResult = { turnId: "t-other", steered: true };
+  due(ctx);
+  await ctx.scheduler.tick();
+  await settle();
+  assert.equal(lastRun(ctx).status, "failed");
+  assert.equal(lastRun(ctx).error, "chat was busy");
+  // The turn it steered into ends: it isn't the beat's.
+  const end = { type: "turn-completed" };
+  ctx.state.reply = "(pass) not mine";
+  ctx.scheduler.observe("c1", { type: "turn-started" });
+  ctx.scheduler.observe("c1", end);
+  assert.equal("quiet" in end, false);
+  assert.deepEqual(ctx.calls.patch, []);
+
+  ctx.state.startResult = { turnId: "t2", steered: false };
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  assert.equal(ctx.calls.send.length, 2);
+  assert.equal(lastRun(ctx).status, "running");
+});
+
+test("a turn that fails after the beat's message is sent but before it starts finishes the Run failed", async () => {
+  const ctx = setup();
+  let resolveStarted;
+  ctx.state.startResult = new Promise((resolve) => (resolveStarted = resolve));
+  due(ctx);
+  await ctx.scheduler.tick();
+  // The turn the Chat just ended is published late, before the beat's message: not the beat's.
+  ctx.scheduler.observe("c1", { type: "turn-failed", message: "the turn before" });
+  assert.equal(lastRun(ctx).status, "running");
+  ctx.scheduler.observe("c1", { type: "message-sent" });
+  ctx.scheduler.observe("c1", { type: "turn-failed", message: "Claude Code isn't installed." });
+  assert.equal(lastRun(ctx).status, "failed");
+  assert.equal(lastRun(ctx).error, "Claude Code isn't installed.");
+  resolveStarted({ turnId: null, steered: false });
+  await settle();
+  assert.equal(lastRun(ctx).error, "Claude Code isn't installed.");
+
+  ctx.state.startResult = { turnId: "t2" };
+  nextBeat(ctx);
+  await ctx.scheduler.tick();
+  assert.equal(ctx.calls.send.length, 2);
+  assert.equal(lastRun(ctx).status, "running");
+});
