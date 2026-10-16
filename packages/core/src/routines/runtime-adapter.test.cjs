@@ -58,7 +58,7 @@ test("busy covers a running turn and an approval or question waiting", () => {
   assert.equal(fixture({ runs: { [chatId]: { approvals: [], questions: [{}] } } }).adapter.busy(chatId), true);
 });
 
-test("after a restart a beat runs on the Chat's own provider and last model, with the routine's permission mode", async () => {
+test("after a restart a beat runs on the Chat's own provider and last model, with the routine's stored permission mode", async () => {
   const { adapter, sent } = fixture();
   const context = { kind: "routine-run", routineId: "r1", runId: "run-2" };
   const { started } = await adapter.send(chatId, { body: "Check CI", prompt: "Check CI + hint", context });
@@ -79,7 +79,14 @@ test("a beat keeps the Chat's latest turn settings when it has some", async () =
   assert.equal(sent[0].provider, "claude");
   assert.equal(sent[0].model, "opus");
   assert.equal(sent[0].effort, "high");
-  assert.equal(sent[0].permissionMode, "full");
+  // The Chat's current mode, not the one it had when the heartbeat was set.
+  assert.equal(sent[0].permissionMode, "plan");
+});
+
+test("a beat with neither turn settings nor a stored mode runs in auto", async () => {
+  const { adapter, sent } = fixture();
+  await adapter.send(chatId, { body: "b", prompt: "p", context: { kind: "routine-run", routineId: "missing" } });
+  assert.equal(sent[0].permissionMode, "auto");
 });
 
 test("a beat into a Chat that's gone fails", async () => {

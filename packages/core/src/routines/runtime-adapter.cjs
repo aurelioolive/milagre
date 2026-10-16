@@ -40,8 +40,9 @@ function routineChats({ chats, store, cachedState, openState, isClosing }) {
       const run = chats.runs[chatId];
       return chats.isBusy(chatId) || Boolean(run?.approvals?.length || run?.questions?.length);
     },
-    // A beat runs on the Chat's latest turn settings; after a restart, on its own provider and last model. The
-    // permission mode is the routine's (the creating Chat's), as #435 does for Delegations.
+    // A beat runs on the Chat's latest turn settings, its permission mode included, so a mode the user changed since
+    // the heartbeat was set holds. After a restart: the Chat's own provider and last model, and the mode the Chat had
+    // when the heartbeat was set.
     async send(chatId, { body, prompt, context }) {
       if (isClosing()) throw new Error("Milagre is closing.");
       const projectPath = projectOfKey(chatId);
@@ -50,13 +51,14 @@ function routineChats({ chats, store, cachedState, openState, isClosing }) {
       const target = state?.sessions?.[sessionId];
       if (!target) throw new Error("That Chat is no longer in its Project.");
       const routine = store.get(context.routineId);
-      const settings = chats.turnSettings(chatId) ?? {
+      const latest = chats.turnSettings(chatId);
+      const settings = latest ?? {
         provider: target.provider ?? routine?.provider ?? "claude",
         model: lastUserModel(state, sessionId) || routine?.model,
       };
       const { started } = await chats.send({
         ...settings,
-        permissionMode: routine?.permissionMode ?? settings.permissionMode ?? "auto",
+        permissionMode: latest?.permissionMode ?? routine?.permissionMode ?? "auto",
         body,
         prompt,
         context,
