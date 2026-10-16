@@ -59,7 +59,6 @@ import type {
 import type { WorktreeStatus } from "./lib/archive";
 import type { PullRequest } from "./model";
 
-/** Which patterns apply to new worktrees, and the files they match in the main checkout. */
 /** What `updateRoutine` may change. `null` drops `maxRuns` or `expiresAt` (a heartbeat keeps at least one). */
 export type RoutineUpdate = Partial<Pick<Routine, "name" | "prompt" | "enabled">> & {
   cron?: string;
@@ -67,6 +66,8 @@ export type RoutineUpdate = Partial<Pick<Routine, "name" | "prompt" | "enabled">
   maxRuns?: number | null;
   expiresAt?: number | null;
 };
+
+/** Which patterns apply to new worktrees, and the files they match in the main checkout. */
 export type FilesToCopy = { source: "worktreeinclude" | "setting" | "default"; worktreeInclude: string | null; matches: string[] };
 
 /** Where the setup command new worktrees run comes from: the repo's .milagre/worktree.json, the project's setting, or nowhere. */
