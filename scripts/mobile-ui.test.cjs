@@ -7643,7 +7643,13 @@ test("mobile Experimental page shows the Mac's Routines switch, hidden until rea
   await settle();
   let tree = render();
   assert.equal(find(tree, (n) => n.props?.title === title).props.selected, false);
-  assert.ok(find(tree, (n) => n.type === "Text" && n.props.children === "Let agents set heartbeats that check back on a Chat on a schedule."));
+  assert.ok(
+    find(
+      tree,
+      (n) =>
+        n.type === "Text" && n.props.children === "Let agents set heartbeats that check back on a Chat on a schedule. Open Chats get it after Reload chat.",
+    ),
+  );
   find(tree, (n) => n.props?.title === title).props.onPress();
   await settle();
   assert.deepEqual(saves, [true]);

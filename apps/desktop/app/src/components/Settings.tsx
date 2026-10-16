@@ -1663,7 +1663,12 @@ function RoutinesSetting() {
   }
   if (enabled === null) return null;
   return (
-    <Row label="Routines" description={"Let agents set heartbeats that check back on a Chat on a schedule." + (error ? ` Could not save: ${error}` : "")}>
+    <Row
+      label="Routines"
+      description={
+        "Let agents set heartbeats that check back on a Chat on a schedule. Open Chats get it after Reload chat." + (error ? ` Could not save: ${error}` : "")
+      }
+    >
       <Switch label="Routines" checked={enabled} onChange={(next) => void change(next)} />
     </Row>
   );
