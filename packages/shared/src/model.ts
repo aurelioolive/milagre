@@ -305,6 +305,58 @@ export type WorktreeLinkedContext = {
 /** Where the user reloaded the Chat's agent: its process ended, and the next turn resumes the session in a new one. */
 export type ChatReloadContext = { kind: "reload" };
 
+/** What starts a Routine. PR 3 adds "linear", PR 4 "webhook". */
+export type RoutineTrigger = { kind: "schedule"; cron: string; timezone: string };
+
+/** Where a Routine's run lands. PR 3 adds "new-chat". */
+export type RoutineTarget = { kind: "chat"; chatId: string };
+
+export type RoutineRunStatus = "running" | "acted" | "quiet" | "failed" | "skipped-busy" | "missed";
+
+export interface Routine {
+  id: string;
+  name: string;
+  prompt: string;
+  trigger: RoutineTrigger;
+  target: RoutineTarget;
+  provider?: ModelProvider;
+  model?: string;
+  permissionMode?: string;
+  enabled: boolean;
+  createdBy: { kind: "agent"; chatId: string } | { kind: "user" };
+  maxRuns?: number;
+  expiresAt?: number;
+  nextRunAt?: number | null;
+  lastRunAt?: number;
+  runCount: number;
+  completedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RoutineRun {
+  id: string;
+  routineId: string;
+  scheduledFor?: number;
+  startedAt: number;
+  endedAt?: number;
+  status: RoutineRunStatus;
+  chatId?: string;
+  summary?: string;
+  error?: string;
+}
+
+/** The divider a Routine's run leaves in its Chat. `quiet` and `summary` are set once the reply is known to be a "(pass)". */
+export type RoutineRunContext = {
+  kind: "routine-run";
+  routineId: string;
+  runId: string;
+  name: string;
+  at: number;
+  quiet?: boolean;
+  summary?: string;
+};
+
 export type ChatContext =
   | AdvisorResultContext
   | WorktreeLinkedContext
@@ -317,6 +369,7 @@ export type ChatContext =
   | UsageLimitContext
   | AccountSwitchContext
   | ChatReloadContext
+  | RoutineRunContext
   | "handover"
   | null;
 
@@ -611,7 +664,7 @@ export type AgentEvent =
   | { type: "permission-resolved"; requestId: string; decision: PermissionDecision | "cancelled" }
   | ({ type: "question-request" } & QuestionRequest)
   | { type: "question-resolved"; requestId: string; outcome: QuestionOutcome }
-  | { type: "turn-completed" }
+  | { type: "turn-completed"; quiet?: boolean }
   | { type: "turn-cancelled"; quit?: boolean }
   /** `notice`: a message Milagre wrote (it names the CLI and the fix), shown as it is; otherwise it is the agent's own error. */
   | { type: "turn-failed"; message: string; notice?: boolean; login?: boolean; limit?: UsageLimit };
