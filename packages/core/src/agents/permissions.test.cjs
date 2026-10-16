@@ -19,6 +19,7 @@ const {
   unwrapShell,
 } = require("./permissions.cjs");
 const { PLAN_TOOL_NAMES } = require("../chat-plan-tools.cjs");
+const { ROUTINE_TOOL_NAMES } = require("../routines/tools.cjs");
 
 test("Codex: MCP approvals show the exact call without offering permanent grants", () => {
   const params = {
@@ -46,7 +47,7 @@ test("Codex: MCP approvals show the exact call without offering permanent grants
   assert.deepEqual(codexMcpResponse("cancelled"), { action: "cancel", content: null });
 });
 
-test("Codex: only Milagre's own plan tools are auto-approved", () => {
+test("Codex: only Milagre's own plan and routine tools are auto-approved", () => {
   const params = (tool, extra = {}) => ({
     serverName: "milagre",
     mode: "form",
@@ -56,7 +57,7 @@ test("Codex: only Milagre's own plan tools are auto-approved", () => {
     ...extra,
   });
   assert.deepEqual(PLAN_TOOL_NAMES, ["tasks_set", "task_update", "tasks_read", "phase_set"]);
-  for (const name of PLAN_TOOL_NAMES) assert.equal(isCodexPlanToolApproval(params(name)), true, name);
+  for (const name of [...PLAN_TOOL_NAMES, ...ROUTINE_TOOL_NAMES]) assert.equal(isCodexPlanToolApproval(params(name)), true, name);
   assert.equal(isCodexPlanToolApproval(params("design_show")), false);
   assert.equal(isCodexPlanToolApproval(params("tasks_set", { serverName: "other" })), false);
   assert.equal(isCodexPlanToolApproval(params("tasks_set", { _meta: { codex_approval_kind: "other" } })), false);
@@ -80,11 +81,11 @@ test("Codex: only Milagre's own plan tools are auto-approved", () => {
   );
 });
 
-test("ACP: only Milagre's own plan tools are auto-approved", () => {
+test("ACP: only Milagre's own plan and routine tools are auto-approved", () => {
   const call = (server, tool) => ({
     toolCall: { toolCallId: "c1", kind: "other", status: "pending", title: `${server}_${tool}`, _meta: { mcp: { server, tool }, is_mcp_tool_call: true } },
   });
-  for (const name of PLAN_TOOL_NAMES) assert.equal(isAcpPlanToolPermission(call("milagre", name)), true, name);
+  for (const name of [...PLAN_TOOL_NAMES, ...ROUTINE_TOOL_NAMES]) assert.equal(isAcpPlanToolPermission(call("milagre", name)), true, name);
   assert.equal(isAcpPlanToolPermission(call("milagre", "design_show")), false);
   assert.equal(isAcpPlanToolPermission(call("other", "tasks_set")), false);
   assert.equal(isAcpPlanToolPermission({ toolCall: { title: "milagre_tasks_set", kind: "other" } }), false);

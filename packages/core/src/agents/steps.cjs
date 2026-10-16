@@ -18,6 +18,7 @@ const { capText, claudeEditDiff, codexChangesDiff, unwrapShell } = require("./pe
 
 // Command output keeps its end, where results and errors are (capOutput); diffs and other details keep their start.
 const { MAX_OUTPUT, capOutput } = require("@milagre/shared/agent-runs");
+const { ROUTINE_TOOL_NAMES } = require("../routines/tools.cjs");
 
 const CLAUDE_EDIT_TOOLS = new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 const CLAUDE_AGENT_TOOLS = new Set(["Agent", "Task"]);
@@ -61,6 +62,14 @@ const artifactTitle = (title, tool) =>
 const artifactStep = (step, title, tool) => ({ ...step("artifact", artifactTitle(title, tool)), tool });
 // Resolving a comment the user left on a design reads as that, not as a tool call.
 const isResolveTool = (server, tool) => server === "milagre" && tool === "artifact_resolve_comment";
+
+// Milagre's routine tools read as what they did to the Project's heartbeats, not as tool calls.
+const ROUTINE_STEP_TOOLS = new Set(ROUTINE_TOOL_NAMES);
+function routineTitle(server, tool, input = {}) {
+  if (server !== "milagre" || !ROUTINE_STEP_TOOLS.has(tool)) return null;
+  if (tool === "heartbeat_create") return typeof input.name === "string" && input.name ? `Set heartbeat "${input.name}"` : "Set a heartbeat";
+  return tool === "routine_delete" ? "Stopped a routine" : "Checked routines";
+}
 
 // The artifact a finished design tool made, from the first line of its result: the JSON summary. Attached images follow it.
 function artifactRef(text) {
@@ -107,6 +116,8 @@ function claudeStep(id, name, input = {}) {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(String(name));
   if (mcp && isArtifactTool(mcp[1], mcp[2])) return artifactStep(step, input.title, mcp[2]);
   if (mcp && isResolveTool(mcp[1], mcp[2])) return step("other", "Resolved a design comment", input.note);
+  const routine = mcp && routineTitle(mcp[1], mcp[2], input);
+  if (routine) return step("other", routine);
   if (mcp) return step("other", `Used ${code(mcp[2])} from ${mcp[1]}`);
   return step("other", `Used ${name}`);
 }
@@ -197,7 +208,7 @@ function codexStep(item) {
     case "mcpToolCall":
       if (isArtifactTool(item.server, item.tool)) return artifactStep(step, item.arguments?.title, item.tool);
       if (isResolveTool(item.server, item.tool)) return step("other", "Resolved a design comment", item.arguments?.note);
-      return step("other", `Used ${code(item.tool)} from ${item.server}`);
+      return step("other", routineTitle(item.server, item.tool, item.arguments) ?? `Used ${code(item.tool)} from ${item.server}`);
     case "dynamicToolCall":
       return step("other", `Used ${code(item.tool)}`);
     case "webSearch":

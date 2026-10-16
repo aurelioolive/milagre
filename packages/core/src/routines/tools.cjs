@@ -1,0 +1,179 @@
+const { z } = require("zod");
+const { projectOfKey } = require("@milagre/shared/agent-runs");
+const { everyToCron } = require("./cron.cjs");
+
+// Milagre's routine tools, the same for every provider: an agent sets, lists, changes and stops heartbeats that
+// send a message into its own Chat on a schedule. The tool names live here only; permission code auto-approves them.
+const ROUTINE_TOOL_NAMES = Object.freeze(["routine_list", "heartbeat_create", "routine_update", "routine_delete", "routine_run_now"]);
+const [ROUTINE_LIST, HEARTBEAT_CREATE, ROUTINE_UPDATE, ROUTINE_DELETE, ROUTINE_RUN_NOW] = ROUTINE_TOOL_NAMES;
+
+const UNIT_MS = { m: 60_000, h: 3600_000, d: 864e5 };
+
+const cronField = z.string().max(100).describe('Five-field cron expression, e.g. "0 9 * * 1-5". Give this or every, not both.');
+const everyField = z
+  .string()
+  .max(10)
+  .describe('A fixed cadence: a number and m (minutes) or h (hours), e.g. "15m" or "2h". At most every minute. Give this or cron, not both.');
+const timezoneField = z.string().max(64).describe("IANA timezone, e.g. America/Sao_Paulo. Defaults to the computer's timezone.");
+const maxRunsField = z.number().int().min(1).max(1000).describe("End the heartbeat after this many runs.");
+const expiresInField = z.string().max(10).describe('End the heartbeat after this long: a number and m, h or d, e.g. "12h" or "3d".');
+
+function expiresInMs(value) {
+  const match = /^(\d+)([mhd])$/.exec(value);
+  if (!match || Number(match[1]) < 1) throw new Error(`Invalid expiresIn: ${JSON.stringify(value)} (use e.g. 30m, 6h or 7d)`);
+  return Number(match[1]) * UNIT_MS[match[2]];
+}
+
+function clock(epoch, timeZone, withDate) {
+  const parts = {};
+  const options = {
+    timeZone,
+    hourCycle: "h23",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(withDate ? { year: "numeric", month: "2-digit", day: "2-digit" } : {}),
+  };
+  for (const part of new Intl.DateTimeFormat("en-US", options).formatToParts(epoch)) parts[part.type] = part.value;
+  const time = `${parts.hour}:${parts.minute}`;
+  return withDate ? `${parts.year}-${parts.month}-${parts.day} ${time}` : time;
+}
+
+// The cadence in words when the cron is one `every` makes, otherwise the cron itself.
+function triggerText({ cron, timezone }) {
+  const minutes = /^\*\/(\d+) \* \* \* \*$/.exec(cron)?.[1];
+  if (minutes) return `every ${minutes} min`;
+  const hours = /^0 \*\/(\d+) \* \* \*$/.exec(cron)?.[1];
+  if (hours) return `every ${hours} h`;
+  return `cron "${cron}" (${timezone})`;
+}
+
+function endText(routine) {
+  const ends = [];
+  if (routine.expiresAt !== undefined) ends.push(clock(routine.expiresAt, routine.trigger.timezone, true));
+  if (routine.maxRuns !== undefined) ends.push(`after ${routine.maxRuns} ${routine.maxRuns === 1 ? "run" : "runs"}`);
+  return `ends ${ends.join(" or ")}`;
+}
+
+const nextText = (routine) => (routine.enabled && routine.nextRunAt != null ? clock(routine.nextRunAt, routine.trigger.timezone, false) : "-");
+
+function summary(routine) {
+  const next = routine.enabled ? `next ${nextText(routine)}` : "paused";
+  return `${triggerText(routine.trigger)}, ${next}, ${endText(routine)}`;
+}
+
+/**
+ * `chatSettings(chatId)` gives the Chat's provider, model and permission mode (or null) for a new heartbeat to reuse.
+ * `defaultTimezone()` is the computer's IANA timezone. `now` is injected so tests can pin "expiresIn" to a date.
+ */
+function createRoutineTools({ store, scheduler, chatSettings, defaultTimezone, now = Date.now }) {
+  function definitions(chatId) {
+    const project = projectOfKey(chatId);
+    const inProject = (routine) => routine.target?.kind === "chat" && projectOfKey(routine.target.chatId) === project;
+    const own = (id) => {
+      const routine = store.get(id);
+      if (!routine || !inProject(routine)) throw new Error(`Routine not found: ${id}`);
+      return routine;
+    };
+    return [
+      {
+        name: ROUTINE_LIST,
+        description: "List the routines (heartbeats) in this Chat's Project: id, name, trigger, next run and whether it is enabled.",
+        input: {},
+        readOnly: true,
+        run: async () => {
+          const lines = store
+            .list()
+            .filter(inProject)
+            .map((routine) => [routine.id, routine.name, triggerText(routine.trigger), nextText(routine), routine.enabled ? "enabled" : "paused"].join(" · "));
+          return lines.length ? lines.join("\n") : "No routines in this Project.";
+        },
+      },
+      {
+        name: HEARTBEAT_CREATE,
+        description:
+          'Set a heartbeat: Milagre sends the prompt into this Chat on a schedule, as a new turn, so you can keep watching something (a PR, a deploy, a long job). Give exactly one of cron or every. A heartbeat always ends: it stops after 7 days unless you set maxRuns or expiresIn. Setting one with the same name again replaces it. On a beat where nothing needs doing, reply "(pass) <reason>". Delete the heartbeat with routine_delete as soon as the work is done (the PR is merged, the deploy is live).',
+        input: {
+          name: z.string().min(1).max(80).describe("Short name, unique in this Chat."),
+          prompt: z.string().min(1).max(4000).describe("What to do on each beat."),
+          cron: cronField.optional(),
+          every: everyField.optional(),
+          timezone: timezoneField.optional(),
+          maxRuns: maxRunsField.optional(),
+          expiresIn: expiresInField.optional(),
+        },
+        readOnly: false,
+        run: async ({ name, prompt, cron, every, timezone, maxRuns, expiresIn }) => {
+          if ((cron === undefined) === (every === undefined)) throw new Error("Give exactly one of cron or every, not both and not neither.");
+          const settings = chatSettings(chatId) ?? {};
+          const routine = store.upsertHeartbeat({
+            chatId,
+            name,
+            prompt,
+            cron,
+            every,
+            timezone: timezone ?? defaultTimezone(),
+            maxRuns,
+            expiresIn,
+            provider: settings.provider,
+            model: settings.model,
+            permissionMode: settings.permissionMode,
+            createdBy: { kind: "agent", chatId },
+          });
+          return `Heartbeat "${routine.name}" set: ${summary(routine)}. Reply "(pass) <reason>" on beats where nothing needs doing.`;
+        },
+      },
+      {
+        name: ROUTINE_UPDATE,
+        description:
+          "Change a routine in this Chat's Project: its name, prompt, schedule (cron or every), timezone, end (maxRuns or expiresIn) or pause it with enabled false.",
+        input: {
+          id: z.string().min(1).max(64),
+          name: z.string().min(1).max(80).optional(),
+          prompt: z.string().min(1).max(4000).optional(),
+          cron: cronField.optional(),
+          every: everyField.optional(),
+          timezone: timezoneField.optional(),
+          maxRuns: maxRunsField.optional(),
+          expiresIn: expiresInField.optional(),
+          enabled: z.boolean().optional(),
+        },
+        readOnly: false,
+        run: async ({ id, every, expiresIn, ...rest }) => {
+          own(id);
+          if (rest.cron !== undefined && every !== undefined) throw new Error("Give cron or every, not both.");
+          const patch = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
+          if (every !== undefined) patch.cron = everyToCron(every);
+          if (expiresIn !== undefined) patch.expiresAt = now() + expiresInMs(expiresIn);
+          const routine = store.update(id, patch);
+          return `Updated "${routine.name}": ${summary(routine)}.`;
+        },
+      },
+      {
+        name: ROUTINE_DELETE,
+        description: "Delete a routine in this Chat's Project. Do this for a heartbeat as soon as its work is done.",
+        input: { id: z.string().min(1).max(64) },
+        readOnly: false,
+        run: async ({ id }) => {
+          const routine = own(id);
+          store.remove(id);
+          return `Deleted "${routine.name}".`;
+        },
+      },
+      {
+        name: ROUTINE_RUN_NOW,
+        description: "Run a routine in this Chat's Project now, outside its schedule, and report how the run went.",
+        input: { id: z.string().min(1).max(64) },
+        readOnly: false,
+        run: async ({ id }) => {
+          const routine = own(id);
+          const run = await scheduler.runNow(id);
+          const detail = run?.error ?? run?.summary;
+          return `Ran "${routine.name}": ${run?.status ?? "unknown"}.${detail ? ` ${detail}` : ""}`;
+        },
+      },
+    ];
+  }
+  return { definitions };
+}
+
+module.exports = { ROUTINE_TOOL_NAMES, createRoutineTools };

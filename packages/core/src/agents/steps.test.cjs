@@ -404,6 +404,29 @@ test("resolving a design comment reads as that, with the agent's note", () => {
   );
 });
 
+test("routine tools read as what they did to the heartbeats, for Claude and Codex", () => {
+  const claude = (name, input) => claudeStep("t1", `mcp__milagre__${name}`, input);
+  const codex = (tool, args) => codexStep({ type: "mcpToolCall", id: "e1", server: "milagre", tool, status: "inProgress", arguments: args });
+  assert.deepEqual(claude("heartbeat_create", { name: "watch CI", prompt: "p", every: "15m" }), {
+    id: "t1",
+    kind: "other",
+    title: 'Set heartbeat "watch CI"',
+  });
+  assert.equal(codex("heartbeat_create", { name: "watch CI" }).title, 'Set heartbeat "watch CI"');
+  assert.equal(claude("heartbeat_create", {}).title, "Set a heartbeat");
+  assert.equal(claude("routine_delete", { id: "a" }).title, "Stopped a routine");
+  assert.equal(codex("routine_delete", { id: "a" }).title, "Stopped a routine");
+  for (const name of ["routine_list", "routine_update", "routine_run_now"]) {
+    assert.equal(claude(name, {}).title, "Checked routines", name);
+    assert.equal(codex(name, {}).title, "Checked routines", name);
+  }
+  // Another server's tool with the same name is still a plain tool call.
+  assert.equal(
+    codexStep({ type: "mcpToolCall", id: "e2", server: "other", tool: "routine_list", status: "inProgress" }).title,
+    "Used `routine_list` from other",
+  );
+});
+
 test("HTML artifact tool renders a typed artifact card for both providers", () => {
   const artifact = { id: "explanation", title: "Explanation", version: 2, format: "html" };
   const args = { title: artifact.title, html: "<p>Why it works</p>" };

@@ -1,5 +1,6 @@
 const path = require("node:path");
 const { PLAN_TOOL_NAMES } = require("../chat-plan-tools.cjs");
+const { ROUTINE_TOOL_NAMES } = require("../routines/tools.cjs");
 
 // Approval requests from both agents, in the shape of the `permission-request` event, and the
 // replies each agent expects for the user's answer. A request is
@@ -171,9 +172,9 @@ function codexMcpRequest(id, params) {
   });
 }
 
-// Milagre's own task and phase tools only write the Chat's own plan, so every permission mode lets them run
-// without a card. Codex names the tool only in the message: `Allow the milagre MCP server to run tool "tasks_set"?`.
-const PLAN_TOOLS = new Set(PLAN_TOOL_NAMES);
+// Milagre's own task and phase tools only write the Chat's own plan, and its routine tools only manage the Project's
+// heartbeats, so every permission mode lets them run without a card. Codex names the tool only in the message: `Allow the milagre MCP server to run tool "tasks_set"?`.
+const PLAN_TOOLS = new Set([...PLAN_TOOL_NAMES, ...ROUTINE_TOOL_NAMES]);
 
 function isCodexPlanToolApproval(params = {}) {
   if (params.serverName !== "milagre" || !isCodexMcpApproval(params)) return false;
