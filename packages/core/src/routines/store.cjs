@@ -68,10 +68,8 @@ function createRoutineStore({ file, now = Date.now, id = () => crypto.randomByte
     let text;
     try {
       text = fs.readFileSync(file, "utf8");
-    } catch (error) {
-      // Only a missing file starts empty: one that can't be read now must not be overwritten by the next save.
-      if (error?.code === "ENOENT") return empty();
-      throw error;
+    } catch {
+      return empty();
     }
     try {
       const parsed = JSON.parse(text);
