@@ -113,6 +113,11 @@ test("nextRun skips a wall-clock time that falls in the spring gap", () => {
   assert.equal(nextRun("30 1 * * *", zone, after), localEpoch(zone, 2026, 3, 30, 1, 30));
 });
 
+test("nextRun does not skip a day when the clock jumps two hours", () => {
+  // Antarctica/Troll moves +00 to +02 on 2026-03-29, so a skip must not overshoot midnight.
+  assert.equal(nextRun("30 0 * * 1", "Antarctica/Troll", Date.UTC(2026, 2, 29, 0, 30)), localEpoch("Antarctica/Troll", 2026, 3, 30, 0, 30));
+});
+
 test("nextRun fires once when a wall-clock minute repeats in the autumn", () => {
   const zone = "Europe/Lisbon";
   // 01:30 happens twice on 2026-10-25; the first one is 00:30 UTC.

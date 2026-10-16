@@ -138,9 +138,10 @@ function nextRun(expr, timeZone, after) {
   for (let t = start; t <= limit;) {
     const wall = read(t);
     if (!dayMatches(cron, wall)) {
-      // Jump toward local midnight, stopping an hour short so a 23 or 25 hour day can't skip past it.
+      // Jump toward local midnight, stopping 3 hours short so a day that gains or loses up to
+      // 2 hours (Antarctica/Troll) can't carry the jump past midnight.
       const toMidnight = 24 * 60 - (wall.hour * 60 + wall.minute);
-      t += Math.max(1, toMidnight - 60) * MINUTE_MS;
+      t += Math.max(1, toMidnight - 180) * MINUTE_MS;
       continue;
     }
     if (cron.hour.has(wall.hour) && cron.minute.has(wall.minute)) {
