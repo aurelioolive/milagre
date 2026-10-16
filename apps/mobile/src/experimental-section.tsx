@@ -106,6 +106,36 @@ export function ExperimentalSection() {
       setAutoSwitchError(failure instanceof Error ? failure.message : "Could not change this setting.");
     }
   }
+  // The Mac's Routines switch; null until the Mac answers (an older Mac rejects the read).
+  const [routines, setRoutines] = useState<boolean | null>(null);
+  const [routinesError, setRoutinesError] = useState("");
+  useFocusEffect(
+    useCallback(() => {
+      const client = session.client;
+      if (!client) return;
+      let live = true;
+      client.call<{ enabled: boolean } | null>("routines:enabled:read", []).then(
+        (value) => live && setRoutines(value ? value.enabled === true : null),
+        () => live && setRoutines(null),
+      );
+      return () => {
+        live = false;
+      };
+    }, [session.client]),
+  );
+  async function changeRoutines(next: boolean) {
+    const client = session.client;
+    if (!client || routines === null) return;
+    setRoutinesError("");
+    setRoutines(next);
+    try {
+      const value = await client.call<{ enabled: boolean }>("routines:enabled:save", [next]);
+      setRoutines(value.enabled === true);
+    } catch (failure) {
+      setRoutines(!next);
+      setRoutinesError(failure instanceof Error ? failure.message : "Could not change this setting.");
+    }
+  }
   useFocusEffect(
     useCallback(() => {
       const client = session.client;
@@ -233,6 +263,13 @@ export function ExperimentalSection() {
           <Toggle title="Switch accounts at usage limits" selected={autoSwitch} onPress={() => void changeAutoSwitch(!autoSwitch)} />
           <Text style={styles.caption}>When a Chat hits its plan&apos;s usage limit, move its Project to the next signed-in account and continue.</Text>
           {autoSwitchError ? <ErrorNotice message={autoSwitchError} /> : null}
+        </View>
+      )}
+      {session.client && routines !== null && (
+        <View style={[styles.card, { gap: 4 }]}>
+          <Toggle title="Routines" selected={routines} onPress={() => void changeRoutines(!routines)} />
+          <Text style={styles.caption}>Let agents set heartbeats that check back on a Chat on a schedule.</Text>
+          {routinesError ? <ErrorNotice message={routinesError} /> : null}
         </View>
       )}
       {session.client && linear !== null && (

@@ -7594,6 +7594,83 @@ test("mobile Experimental page shows the Mac's usage-limit auto-switch, saved on
   );
 });
 
+test("mobile Experimental page shows the Mac's Routines switch, hidden until read, saved on the Mac and rolled back when refused", async () => {
+  const react = hookHost();
+  const focused = [];
+  const saves = [];
+  let refuse = false;
+  const client = {
+    async call(method, args) {
+      if (method === "routines:enabled:read") return { enabled: false };
+      if (method === "routines:enabled:save") {
+        saves.push(args[0]);
+        if (refuse) throw new Error("This computer does not allow changing this setting from a phone.");
+        return { enabled: args[0] };
+      }
+      return null;
+    },
+  };
+  const modules = (session) => ({
+    react,
+    "react/jsx-runtime": { jsx, jsxs: jsx },
+    "@milagre/shared/linear": require("../packages/shared/src/linear.ts"),
+    "react-native": { View: "View", Text: "Text" },
+    "expo-router": { useFocusEffect: (fn) => focused.push(fn), router: { push() {} } },
+    "@milagre/shared/themes": { DEFAULT_THEME_ID: "milagre-blue", seedsFrom: (id) => ({ from: id }) },
+    "./custom-theme-section": { CustomThemeSection: "CustomThemeSection" },
+    "./ultracode-fatality-setting": { useUltracodeFatality: () => [false, () => {}] },
+    "./floating-inbox-setting": { useFloatingInbox: () => [false, () => {}], useFloatingInboxActivity: () => [true, () => {}] },
+    "./push": { usePush: () => ({ state: null }) },
+    "./icons": { Icon: "Icon" },
+    "@hugeicons/core-free-icons": {},
+    "@milagre/shared/notification-chimes": require("@milagre/shared/notification-chimes"),
+    "./session": { useSession: () => ({ designs: { ...designsOn }, ...session }) },
+    "./ui": { ErrorNotice: "ErrorNotice", ListRow: "ListRow", PillButton: "PillButton", Toggle: "Toggle", styles: {} },
+  });
+  const { ExperimentalSection } = load("experimental-section.tsx", modules({ client }));
+  const render = () => {
+    react.begin();
+    return ExperimentalSection();
+  };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const title = "Routines";
+  assert.equal(
+    find(render(), (n) => n.props?.title === title),
+    undefined,
+    "hidden until the Mac answers",
+  );
+  for (const effect of focused.splice(0)) effect();
+  await settle();
+  let tree = render();
+  assert.equal(find(tree, (n) => n.props?.title === title).props.selected, false);
+  assert.ok(find(tree, (n) => n.type === "Text" && n.props.children === "Let agents set heartbeats that check back on a Chat on a schedule."));
+  find(tree, (n) => n.props?.title === title).props.onPress();
+  await settle();
+  assert.deepEqual(saves, [true]);
+  assert.equal(find(render(), (n) => n.props?.title === title).props.selected, true);
+  refuse = true;
+  find(render(), (n) => n.props?.title === title).props.onPress();
+  await settle();
+  tree = render();
+  assert.deepEqual(saves, [true, false]);
+  assert.equal(find(tree, (n) => n.props?.title === title).props.selected, true, "a refused save puts the switch back");
+  assert.match(find(tree, (n) => n.type === "ErrorNotice").props.message, /does not allow/);
+  const rejecting = load(
+    "experimental-section.tsx",
+    modules({ client: { call: async () => Promise.reject(new Error("unknown method")) } }),
+  ).ExperimentalSection;
+  react.begin();
+  rejecting();
+  for (const effect of focused.splice(0)) effect();
+  await settle();
+  react.begin();
+  assert.equal(
+    find(rejecting(), (n) => n.props?.title === title),
+    undefined,
+    "an older Mac rejects the read: no switch",
+  );
+});
+
 test("mobile ChatReply shows the usage-limit card instead of the failed line, with a Project only when it can switch", () => {
   const react = { memo: (fn) => fn, useCallback: (fn) => fn, useEffect() {}, useRef: () => ({}), useState: (value) => [value, () => {}] };
   const { ChatReply } = load("chat-reply.tsx", {
