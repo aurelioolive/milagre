@@ -1,4 +1,5 @@
 const { spawnCommand } = require("./command.cjs");
+const { readMcpExtras } = require("../mcp/extras.cjs");
 const { settleSubagents } = require("./subagents.cjs");
 const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
@@ -17,6 +18,7 @@ const { PendingPermissions, claudeRequest, claudeResult, insideRoot, insideWorks
 const { PendingQuestions, claudeQuestionRequest, claudeQuestionResult } = require("./questions.cjs");
 const { mcpContent, runTool } = require("../linked-tools.cjs");
 const { advisorPolicy, ANALYSIS_INSTRUCTIONS } = require("./advisor-policy.cjs");
+const { toClaudeConfig } = require("../mcp/definitions.cjs");
 
 // Milagre permission mode -> Claude Code permission mode. In Ask (`default`) Claude Code checks with
 // the user, through canUseTool, before edits and commands its rules don't already allow.
@@ -106,6 +108,7 @@ class ClaudeSession {
     designsEnabled = true,
     analysisOnly = false,
     linked = null,
+    mcpExtras = null,
     loadSdk = () => import("@anthropic-ai/claude-agent-sdk"),
     spawnImpl = spawn,
     interruptGraceMs = 3000,
@@ -122,6 +125,7 @@ class ClaudeSession {
       designsEnabled,
       analysisOnly,
       linked,
+      mcpExtras,
       loadSdk,
       spawnImpl,
       interruptGraceMs,
@@ -287,6 +291,13 @@ class ClaudeSession {
     this.ultracode = ultracode;
     this.fastMode = fastMode;
     this.outputStyle = null;
+    // Settings › MCP: Everywhere servers join the Chat's servers; off servers are switched off once Claude Code has started.
+    // An advisor never gets them, and a failing read never stops the Chat from starting.
+    const extras = this.mcpExtras && !this.analysisOnly ? await readMcpExtras(this) : null;
+    if (this.closed) return;
+    this.mcpOff = extras?.off ?? [];
+    const linked = this.linked?.tools.length ? linkedOptions(this.linked.tools, sdk) : {};
+    const extraServers = Object.fromEntries((extras?.servers ?? []).map((def) => [def.name, toClaudeConfig(def)]));
     this.query = sdk.query({
       prompt: this.inbox,
       options: {
@@ -310,7 +321,8 @@ class ClaudeSession {
             .filter(Boolean)
             .join("\n\n"),
         },
-        ...(this.linked?.tools.length ? linkedOptions(this.linked.tools, sdk) : {}),
+        ...linked,
+        ...(Object.keys(extraServers).length ? { mcpServers: { ...extraServers, ...linked.mcpServers } } : {}),
         // Subagents design on the Chat's canvas too: they get Milagre's tools, but not the system prompt above.
         ...(this.designsEnabled && !this.analysisOnly && this.linked?.tools.some((tool) => tool.name === "design_show")
           ? {
@@ -337,6 +349,9 @@ class ClaudeSession {
       },
     });
     void this.readMessages(this.query);
+    // Switch the off servers off before the first message, so the first turn never offers them. The init pass in
+    // readMessages tries once more.
+    for (const name of this.mcpOff) await this.query.toggleMcpServer?.(name, false)?.catch(() => {});
     // Thinking arrives as readable summaries rather than empty blocks, for the reply's thinking steps.
     // Only the display changes (null keeps the model's own thinking budget), so it suits every model.
     await this.query.setMaxThinkingTokens?.(null, "summarized").catch(() => {});
@@ -416,6 +431,11 @@ class ClaudeSession {
         // started by itself, for a steering message that came in just as the last turn ended. It starts
         // with its first event, so a turn that only records a task notification never shows.
         if (message.type === "system" && message.subtype === "init" && !this.turnActive && !this.closed) this.implicitTurn = true;
+        if (message.type === "system" && message.subtype === "init" && this.mcpOff?.length) {
+          const off = this.mcpOff;
+          this.mcpOff = [];
+          for (const name of off) this.query?.toggleMcpServer?.(name, false)?.catch(() => {});
+        }
         for (const event of mapClaudeMessage(message, this.state)) {
           if (this.implicitTurn && !this.turnActive && !this.closed) this.beginImplicitTurn();
           this.implicitTurn = false;

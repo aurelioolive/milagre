@@ -14,7 +14,7 @@ const FAKE = path.join(__dirname, "fixtures", "fake-acp-agent.cjs");
 const AGENT = "/opt/antigravity/agy_acp_server.par";
 const TURN = { prompt: "Hi", images: [], model: "gemini-3.8-flash-high", permissionMode: "ask" };
 
-function antigravity(t, { scenario = "reply", resumeId, linked, command = AGENT, interruptGraceMs, workspaceRoots, designsEnabled, env } = {}) {
+function antigravity(t, { scenario = "reply", resumeId, linked, mcpExtras, command = AGENT, interruptGraceMs, workspaceRoots, designsEnabled, env } = {}) {
   const events = [];
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "milagre-acp-test-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "milagre-acp-cwd-"));
@@ -23,6 +23,7 @@ function antigravity(t, { scenario = "reply", resumeId, linked, command = AGENT,
     cwd,
     resumeId,
     linked,
+    mcpExtras,
     command,
     env,
     workspaceRoots,
@@ -530,4 +531,50 @@ test("temp directories carry their owner's pid, and a sweep removes only those w
   fs.mkdirSync(legacy);
   await sweepTempDirs(root);
   assert.deepEqual(fs.readdirSync(root).sort(), [path.basename(legacy), path.basename(mine)].sort());
+});
+
+test("Everywhere servers reach session/new", async (t) => {
+  const { session, events } = antigravity(t, {
+    mcpExtras: async () => ({
+      servers: [{ name: "linear", type: "http", url: "https://x", headers: {} }],
+      off: ["figma"],
+    }),
+  });
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.deepEqual(
+    (await sent(session, "session/new"))[0].mcpServers.map((server) => server.name),
+    ["linear"],
+  );
+});
+
+test("an agent that refuses Everywhere servers still gets milagre, and the linked tools count as available", async (t) => {
+  const available = [];
+  const linked = { url: async () => "http://127.0.0.1:9/mcp/abc", toolsAvailable: (value) => available.push(value) };
+  const { session, events } = antigravity(t, {
+    scenario: "reject-extra-mcp",
+    linked,
+    mcpExtras: async () => ({ servers: [{ name: "linear", type: "http", url: "https://x", headers: {} }], off: [] }),
+  });
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.deepEqual(
+    (await sent(session, "session/new")).map((params) => params.mcpServers.map((server) => server.name)),
+    [["milagre", "linear"], ["milagre"]],
+  );
+  assert.deepEqual(available, [true]);
+});
+
+test("a failing mcpExtras still starts the agent and is logged once", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const { session, events } = antigravity(t, {
+    mcpExtras: async () => {
+      throw new Error("boom");
+    },
+  });
+  await session.startTurn(TURN);
+  await ended(events);
+  assert.ok(events.some((event) => event.type === "turn-completed"));
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0].arguments.join(" ")), /boom/);
 });
