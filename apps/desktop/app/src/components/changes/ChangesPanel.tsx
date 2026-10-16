@@ -1,3 +1,4 @@
+import { CheckpointControl } from "./CheckpointControl";
 import { useMemo, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon, ArrowRight01Icon, Comment01Icon, File01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
@@ -50,7 +51,9 @@ export function ChangesPanel({
   onSelectFile,
   activePath,
   commentCounts,
+  checkpointChatId,
 }: {
+  checkpointChatId?: string;
   list: DiffList;
   mode: DiffMode;
   onModeChange: (mode: DiffMode) => void;
@@ -84,6 +87,7 @@ export function ChangesPanel({
           </span>
         )}
       </ChangesHeader>
+      {checkpointChatId && <CheckpointControl key={checkpointChatId} chatId={checkpointChatId} />}
       <ScrollArea className="flex-1 py-1.5">
         <ChangeList list={list} mode={mode} onSelectFile={onSelectFile} activePath={activePath} commentCounts={commentCounts} />
       </ScrollArea>

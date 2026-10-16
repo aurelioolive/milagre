@@ -1,3 +1,4 @@
+import { CheckpointControl } from "./CheckpointControl";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -19,6 +20,7 @@ import { ScrollArea } from "../primitives/ScrollArea";
 import { PickerPanel, PickerRow } from "../primitives/Picker";
 
 export function LinkChangesPanel({
+  checkpointChatId,
   members,
   projects,
   lists,
@@ -34,6 +36,7 @@ export function LinkChangesPanel({
   onOpenEditor,
   onReveal,
 }: {
+  checkpointChatId?: string;
   members: WorktreeBinding[];
   projects: Array<{ id: string; path: string; name: string }>;
   lists: Record<string, DiffList>;
@@ -69,6 +72,7 @@ export function LinkChangesPanel({
       className="flex min-h-0 w-[var(--changes-panel-width,320px)] shrink-0 flex-col overflow-hidden rounded-window bg-surface shadow-card"
     >
       <ChangesHeader mode={mode} onModeChange={onModeChange} onRefresh={onRefresh} loading={loading} totals={totals} />
+      {checkpointChatId && <CheckpointControl key={checkpointChatId} chatId={checkpointChatId} />}
       <ScrollArea className="flex-1 py-1.5">
         {members.map((member) => (
           <ProjectChanges

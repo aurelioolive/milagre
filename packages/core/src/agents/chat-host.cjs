@@ -112,6 +112,7 @@ class ChatHost {
     readSubagents = async () => [],
     handoverTools,
     beforeSend = async () => {},
+    beforeTask = async () => {},
     onUnblocked = () => {},
     now = Date.now,
   }) {
@@ -126,6 +127,7 @@ class ChatHost {
       readSubagents,
       handoverTools,
       beforeSend,
+      beforeTask,
       onUnblocked,
       now,
     });
@@ -442,6 +444,7 @@ class ChatHost {
     let preparation = null;
     // A handoff still preparing when this message was sent: it steers into that turn once it starts.
     let waitFor = null;
+    let newTask = false;
     let pendingId;
     let originalSession;
     let stagedSession;
@@ -470,6 +473,7 @@ class ChatHost {
         // A message that steers a running turn, or one whose handoff is still preparing, never hands off.
         waitFor = this.preparing.get(chatId) ?? null;
         const steering = Boolean(this.runs[chatId]) || Boolean(waitFor);
+        newTask = !steering;
         handoff = steering ? null : handoffKind(withSession, session.id, provider);
         if (steering) {
           runProvider = session.provider ?? provider;
@@ -545,6 +549,7 @@ class ChatHost {
     );
     try {
       await this.states.flush(projectPath);
+      if (newTask) await this.beforeTask({ ...request, ...target });
     } catch (error) {
       if (preparation) {
         this.release(target.chatId, preparation);

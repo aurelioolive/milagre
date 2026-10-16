@@ -616,6 +616,7 @@ export function LinkWorkspace({
             <ChangesPanelSlot open={!canvasOpen && changes.open}>
               {session && (
                 <LinkChangesPanel
+                  checkpointChatId={chatId ?? undefined}
                   key={chatId}
                   members={session.worktrees}
                   projects={opened.projects}

@@ -2565,6 +2565,7 @@ function App() {
             </main>
             <ChangesPanelSlot open={changes.open}>
               <ChangesPanel
+                checkpointChatId={project && selectedSession ? chatKey(project.path, selectedSession.id) : undefined}
                 list={changes.list}
                 mode={changes.mode}
                 onModeChange={changes.setMode}

@@ -9696,3 +9696,72 @@ test("mobile notification chime sheet: a tap plays the chime and saves it with t
   all(ChimeSheet());
   assert.deepEqual(labels, ["System default", "Miracle", "FAAAH", "Bombastic side eye", "Vine boom", "Metal pipe", "Bruh", "Emotional damage"]);
 });
+
+test("checkpoint review on the phone requires decisions, submits explicit confirmation and recovers from stale previews", async (t) => {
+  const react = hookHost({ effects: true });
+  t.after(() => react.cleanup());
+  const hook = load("../../../packages/shared/src/use-checkpoints.ts", { react });
+  const item = { id: "task", createdAt: 1, completedAt: 2, kind: "task", excluded: 0, permissionMode: "ask" };
+  const files = [
+    { key: "0:a", path: "a", worktree: "/p", action: "replace", conflict: true },
+    { key: "0:b", path: "b", worktree: "/p", action: "delete", conflict: false },
+  ];
+  const calls = [];
+  let stale = true;
+  const client = {
+    call: async (method, args) => {
+      calls.push({ method, args });
+      if (method === "checkpoint:list") return [item];
+      if (method === "checkpoint:preview") return { ...item, token: "preview", files };
+      if (stale) throw new Error("Files changed. Preview again before restoring");
+      return { restored: 1, recoveryId: "recovery" };
+    },
+  };
+  const control = load("checkpoint-control.tsx", {
+    react,
+    "react/jsx-runtime": { jsx, jsxs: jsx },
+    "react-native": { View: "View", Text: "Text" },
+    "@milagre/shared/checkpoints": { CHECKPOINT_HELP: "Review", CHECKPOINT_EXCLUSIONS: "Excluded", checkpointTitle: () => "Before task" },
+    "@milagre/shared/use-checkpoints": hook,
+    "./session": { useSession: () => ({ client }) },
+    "./ui": { Button: "Button", ErrorNotice: "ErrorNotice", ListRow: "ListRow", PillButton: "PillButton" },
+  });
+  const render = () => {
+    react.begin();
+    return control.CheckpointControl({ chatId: "/p#1" });
+  };
+  const nodes = (node) => (!node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)]);
+  const button = (title) => nodes(render()).find((node) => node.props?.title === title);
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+  button("Checkpoints").props.onPress();
+  await settle();
+  await button("Before task").props.onPress();
+  await settle();
+  assert.equal(button("Confirm restore (0)").props.disabled, true);
+  button("Keep current").props.onPress();
+  assert.equal(button("Confirm restore (0)").props.disabled, true);
+  nodes(render())
+    .filter((node) => node.props?.title === "Restore checkpoint")[1]
+    .props.onPress();
+  assert.equal(button("Confirm restore (1)").props.disabled, false);
+  await button("Confirm restore (1)").props.onPress();
+  await settle();
+  assert.equal(button("Confirm restore (1)").props.disabled, true);
+  assert.ok(nodes(render()).some((node) => node.props?.message?.includes("Files changed")));
+  const sent = calls.find((call) => call.method === "checkpoint:restore").args[0];
+  assert.equal(sent.approved, true);
+  assert.equal(sent.chatId, "/p#1");
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.decisions)), { "0:a": "keep", "0:b": "restore" });
+  await button("Preview again").props.onPress();
+  await settle();
+  assert.equal(button("Confirm restore (0)").props.disabled, true);
+  stale = false;
+  nodes(render())
+    .filter((node) => node.props?.title === "Keep current")
+    .forEach((node) => node.props.onPress());
+  await button("Confirm restore (0)").props.onPress();
+  await settle();
+  assert.ok(nodes(render()).some((node) => typeof node.props?.children === "string" && node.props.children.includes("1 file restored")));
+});
