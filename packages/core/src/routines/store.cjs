@@ -4,6 +4,8 @@ const path = require("node:path");
 const { everyToCron, nextRun } = require("./cron.cjs");
 
 const DEFAULT_EXPIRY_MS = 7 * 864e5;
+// Every heartbeat ends, and none runs for longer than this.
+const MAX_EXPIRY_MS = 30 * 864e5;
 const MISSED_AFTER_MS = 60_000;
 const MAX_RUNS_KEPT = 50;
 const UNIT_MS = { m: 60_000, h: 3600_000, d: 864e5 };
@@ -17,7 +19,9 @@ const MAX_FAILED_IN_A_ROW = 3;
 function parseExpiresIn(value) {
   const match = typeof value === "string" ? /^(\d+)([mhd])$/.exec(value) : null;
   if (!match || Number(match[1]) < 1) throw new Error(`Invalid expiresIn: ${JSON.stringify(value)} (use e.g. 30m, 6h or 7d)`);
-  return Number(match[1]) * UNIT_MS[match[2]];
+  const ms = Number(match[1]) * UNIT_MS[match[2]];
+  if (ms > MAX_EXPIRY_MS) throw new Error(`expiresIn ${JSON.stringify(value)} is too long: a heartbeat runs for at most 30d`);
+  return ms;
 }
 
 const copy = (value) => (value === undefined ? value : structuredClone(value));
@@ -126,8 +130,17 @@ function createRoutineStore({ file, now = Date.now, id = () => crypto.randomByte
     const at = now();
     const expression = cron ?? everyToCron(every);
     const nextRunAt = nextRun(expression, timezone, at);
-    const expiryMs = expiresIn !== undefined ? parseExpiresIn(expiresIn) : maxRuns === undefined ? DEFAULT_EXPIRY_MS : undefined;
     const existing = data.routines.find((routine) => !routine.completedAt && routine.name === name && routine.target.chatId === chatId);
+    // Set again with no end of its own, a heartbeat keeps the end it had rather than run 7 more days.
+    const keepEnd = expiresIn === undefined && maxRuns === undefined && existing && (existing.expiresAt !== undefined || existing.maxRuns !== undefined);
+    if (keepEnd) maxRuns = existing.maxRuns;
+    const expiresAt = keepEnd
+      ? existing.expiresAt
+      : expiresIn !== undefined
+        ? at + parseExpiresIn(expiresIn)
+        : maxRuns === undefined
+          ? at + DEFAULT_EXPIRY_MS
+          : undefined;
     const routine = {
       id: existing?.id ?? id(),
       name,
@@ -145,7 +158,7 @@ function createRoutineStore({ file, now = Date.now, id = () => crypto.randomByte
     if (model !== undefined) routine.model = model;
     if (permissionMode !== undefined) routine.permissionMode = permissionMode;
     if (maxRuns !== undefined) routine.maxRuns = maxRuns;
-    if (expiryMs !== undefined) routine.expiresAt = at + expiryMs;
+    if (expiresAt !== undefined) routine.expiresAt = expiresAt;
     if (existing?.lastRunAt !== undefined) routine.lastRunAt = existing.lastRunAt;
     if (existing) data.routines[data.routines.indexOf(existing)] = routine;
     else data.routines.push(routine);
@@ -158,6 +171,10 @@ function createRoutineStore({ file, now = Date.now, id = () => crypto.randomByte
     if (!routine) throw new Error(`Routine not found: ${routineId}`);
     if (routine.completedAt) throw new Error(`Routine is completed: ${routineId}`);
     for (const key of Object.keys(patch)) if (!UPDATABLE.has(key)) throw new Error(`Cannot update ${key}`);
+    if (patch.expiresAt != null) {
+      if (typeof patch.expiresAt !== "number" || !Number.isFinite(patch.expiresAt)) throw new Error("expiresAt must be a time in milliseconds");
+      if (patch.expiresAt > now() + MAX_EXPIRY_MS) throw new Error("A heartbeat ends at most 30d from now");
+    }
     const next = copy(routine);
     for (const key of ["name", "prompt", "enabled"]) if (patch[key] !== undefined) next[key] = patch[key];
     for (const key of ["maxRuns", "expiresAt"]) {

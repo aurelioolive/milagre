@@ -8,6 +8,7 @@ const ROUTINE_TOOL_NAMES = Object.freeze(["routine_list", "heartbeat_create", "r
 const [ROUTINE_LIST, HEARTBEAT_CREATE, ROUTINE_UPDATE, ROUTINE_DELETE, ROUTINE_RUN_NOW] = ROUTINE_TOOL_NAMES;
 
 const UNIT_MS = { m: 60_000, h: 3600_000, d: 864e5 };
+const MAX_EXPIRY_MS = 30 * 864e5;
 
 const cronField = z.string().max(100).describe('Five-field cron expression, e.g. "0 9 * * 1-5". Give this or every, not both.');
 const everyField = z
@@ -16,12 +17,19 @@ const everyField = z
   .describe('A fixed cadence: a number and m (minutes) or h (hours), e.g. "15m" or "2h". At most every minute. Give this or cron, not both.');
 const timezoneField = z.string().max(64).describe("IANA timezone, e.g. America/Sao_Paulo. Defaults to the computer's timezone.");
 const maxRunsField = z.number().int().min(1).max(1000).describe("End the heartbeat after this many runs.");
-const expiresInField = z.string().max(10).describe('End the heartbeat after this long: a number and m, h or d, e.g. "12h" or "3d".');
+const expiresInField = z.string().max(10).describe('End the heartbeat after this long: a number and m, h or d, e.g. "12h" or "3d". At most 30d.');
 
 function expiresInMs(value) {
   const match = /^(\d+)([mhd])$/.exec(value);
   if (!match || Number(match[1]) < 1) throw new Error(`Invalid expiresIn: ${JSON.stringify(value)} (use e.g. 30m, 6h or 7d)`);
-  return Number(match[1]) * UNIT_MS[match[2]];
+  const ms = Number(match[1]) * UNIT_MS[match[2]];
+  if (ms > MAX_EXPIRY_MS) throw new Error(`expiresIn ${JSON.stringify(value)} is too long: a heartbeat runs for at most 30d`);
+  return ms;
+}
+
+// Throws for a timezone the clock can't show times in, before anything is saved.
+function checkTimezone(timeZone) {
+  Intl.DateTimeFormat("en-US", { timeZone }).format(0);
 }
 
 function clock(epoch, timeZone, withDate) {
@@ -91,7 +99,7 @@ function createRoutineTools({ store, scheduler, chatSettings, defaultTimezone, n
       {
         name: HEARTBEAT_CREATE,
         description:
-          'Set a heartbeat: Milagre sends the prompt into this Chat on a schedule, as a new turn, so you can keep watching something (a PR, a deploy, a long job). Give exactly one of cron or every. A heartbeat always ends: it stops after 7 days unless you set maxRuns or expiresIn. Setting one with the same name again replaces it. On a beat where nothing needs doing, reply "(pass) <reason>". Delete the heartbeat with routine_delete as soon as the work is done (the PR is merged, the deploy is live).',
+          'Set a heartbeat: Milagre sends the prompt into this Chat on a schedule, as a new turn, so you can keep watching something (a PR, a deploy, a long job). Give exactly one of cron or every. A heartbeat always ends: it stops after 7 days unless you set maxRuns or expiresIn (at most 30 days). Setting one with the same name again replaces it. On a beat where nothing needs doing, reply "(pass) <reason>". Delete the heartbeat with routine_delete as soon as the work is done (the PR is merged, the deploy is live).',
         input: {
           name: z.string().min(1).max(80).describe("Short name, unique in this Chat."),
           prompt: z.string().min(1).max(4000).describe("What to do on each beat."),
@@ -104,6 +112,9 @@ function createRoutineTools({ store, scheduler, chatSettings, defaultTimezone, n
         readOnly: false,
         run: async ({ name, prompt, cron, every, timezone, maxRuns, expiresIn }) => {
           if ((cron === undefined) === (every === undefined)) throw new Error("Give exactly one of cron or every, not both and not neither.");
+          // The reply below formats the heartbeat's times: check what it reads before the store saves anything.
+          if (expiresIn !== undefined) expiresInMs(expiresIn);
+          checkTimezone(timezone ?? defaultTimezone());
           const settings = chatSettings(chatId) ?? {};
           const routine = store.upsertHeartbeat({
             chatId,
@@ -141,6 +152,7 @@ function createRoutineTools({ store, scheduler, chatSettings, defaultTimezone, n
         run: async ({ id, every, expiresIn, ...rest }) => {
           own(id);
           if (rest.cron !== undefined && every !== undefined) throw new Error("Give cron or every, not both.");
+          if (rest.timezone !== undefined) checkTimezone(rest.timezone);
           const patch = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
           if (every !== undefined) patch.cron = everyToCron(every);
           if (expiresIn !== undefined) patch.expiresAt = now() + expiresInMs(expiresIn);

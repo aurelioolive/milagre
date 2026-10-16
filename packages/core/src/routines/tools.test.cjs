@@ -246,3 +246,21 @@ test("the routine tools are auto-approved for Codex and ACP", () => {
     assert.equal(isAcpPlanToolPermission({ toolCall: { _meta: { mcp: { server: "milagre", tool: name } } } }), true, name);
   }
 });
+
+test("expiresIn is capped at 30 days in heartbeat_create and routine_update, and a refused one saves nothing", async () => {
+  const { store, call } = setup();
+  const tooLong = await call("heartbeat_create", { ...create, expiresIn: "45d" });
+  assert.equal(tooLong.isError, true);
+  assert.match(tooLong.text, /at most 30d/);
+  const huge = await call("heartbeat_create", { ...create, expiresIn: "9999999999d" });
+  assert.equal(huge.isError, true);
+  assert.deepEqual(store.list(), []);
+  const badZone = await call("heartbeat_create", { ...create, timezone: "Mars/Base" });
+  assert.equal(badZone.isError, true);
+  assert.deepEqual(store.list(), []);
+  assert.equal((await call("heartbeat_create", { ...create, expiresIn: "30d" })).isError, false);
+  const update = await call("routine_update", { id: "id1", expiresIn: "31d" });
+  assert.equal(update.isError, true);
+  assert.match(update.text, /at most 30d/);
+  assert.equal(store.get("id1").expiresAt, START + 30 * DAY);
+});

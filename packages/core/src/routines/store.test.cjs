@@ -412,3 +412,42 @@ test("three failed Runs in a row complete the heartbeat; an acted or quiet Run r
   assert.deepEqual(store.list(), []);
   assert.equal(store.runs(routine.id)[0].error, "no CLI · 3 failed beats in a row");
 });
+
+test("expiresIn is capped at 30 days, and nothing is saved past it", () => {
+  const { store, options } = setup();
+  assert.equal(store.upsertHeartbeat({ ...base, name: "a", expiresIn: "30d" }).expiresAt, START + 30 * DAY);
+  for (const expiresIn of ["31d", "721h", "43201m", "99999999999d"]) {
+    assert.throws(() => store.upsertHeartbeat({ ...base, name: "b", expiresIn }), /at most 30d/, expiresIn);
+  }
+  assert.deepEqual(
+    createRoutineStore(options)
+      .list()
+      .map((routine) => routine.name),
+    ["a"],
+  );
+});
+
+test("update keeps expiresAt within 30 days of now", () => {
+  const { store } = setup();
+  const routine = store.upsertHeartbeat(base);
+  assert.throws(() => store.update(routine.id, { expiresAt: START + 31 * DAY }), /at most 30d/);
+  assert.throws(() => store.update(routine.id, { expiresAt: Number.MAX_VALUE }), /at most 30d/);
+  assert.throws(() => store.update(routine.id, { expiresAt: "soon" }), /expiresAt/);
+  assert.equal(store.get(routine.id).expiresAt, START + 7 * DAY);
+  assert.equal(store.update(routine.id, { expiresAt: START + 30 * DAY }).expiresAt, START + 30 * DAY);
+});
+
+test("setting a heartbeat again without an end keeps the end it had", () => {
+  const { store, clock } = setup();
+  const first = store.upsertHeartbeat({ ...base, expiresIn: "2d" });
+  clock.t += DAY;
+  const again = store.upsertHeartbeat({ ...base, prompt: "look again" });
+  assert.equal(again.expiresAt, first.expiresAt);
+  const limited = store.upsertHeartbeat({ ...base, name: "limited", maxRuns: 4 });
+  clock.t += DAY;
+  const limitedAgain = store.upsertHeartbeat({ ...base, name: "limited", prompt: "p2" });
+  assert.equal(limitedAgain.maxRuns, 4);
+  assert.equal(limitedAgain.expiresAt, limited.expiresAt);
+  // A new end given replaces the old one.
+  assert.equal(store.upsertHeartbeat({ ...base, expiresIn: "1h" }).expiresAt, clock.t + 3600_000);
+});
